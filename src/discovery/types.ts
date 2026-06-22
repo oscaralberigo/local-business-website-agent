@@ -1,5 +1,6 @@
 import type { BusinessContext } from "../business-context/types.js";
 import type { ContactEvidence } from "../contact-finder/types.js";
+import type { PreviewWebsite } from "../preview-generation/types.js";
 import type { WebsiteAssessment } from "../website-assessment/types.js";
 
 export type DiscoveryMode = "place_search" | "radius_search";
@@ -129,6 +130,7 @@ export type ProspectBusinessDetail = ProspectBusiness & {
   appearanceHistory: DiscoveryAppearanceDetail[];
   businessContext?: BusinessContext;
   contactEvidence?: ContactEvidence[];
+  previewWebsite?: PreviewWebsite;
   websiteAssessment?: WebsiteAssessment;
 };
 

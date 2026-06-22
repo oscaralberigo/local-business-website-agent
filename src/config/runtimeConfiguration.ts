@@ -41,6 +41,7 @@ const environmentSchema = z.object({
   PORT: portFromEnvironment,
   APP_BASE_URL: z.string().url().default("http://localhost:3000"),
   PREVIEW_BASE_URL: z.string().url().default("http://localhost:8080"),
+  PREVIEW_ARTIFACT_ROOT: z.string().min(1).default("previews"),
   OPERATOR_USERNAME: z.string().min(1).default("operator"),
   OPERATOR_PASSWORD: z.string().min(1, "OPERATOR_PASSWORD is required"),
   OPERATOR_SESSION_SECRET: z.string().min(16, "OPERATOR_SESSION_SECRET must be at least 16 characters"),
@@ -59,6 +60,7 @@ export type RuntimeConfiguration = {
   port: number;
   appBaseUrl: string;
   previewBaseUrl: string;
+  previewArtifactRoot: string;
   operatorUsername: string;
   operatorPassword: string;
   operatorSessionSecret: string;
@@ -90,6 +92,7 @@ export function loadRuntimeConfiguration(environment: NodeJS.ProcessEnv): Runtim
     port: parsed.PORT,
     appBaseUrl: parsed.APP_BASE_URL,
     previewBaseUrl: parsed.PREVIEW_BASE_URL,
+    previewArtifactRoot: parsed.PREVIEW_ARTIFACT_ROOT,
     operatorUsername: parsed.OPERATOR_USERNAME,
     operatorPassword: parsed.OPERATOR_PASSWORD,
     operatorSessionSecret: parsed.OPERATOR_SESSION_SECRET,
@@ -114,6 +117,7 @@ export function buildConfigReadout(configuration: RuntimeConfiguration): ConfigR
     { label: "Environment", value: configuration.environment },
     { label: "App base URL", value: configuration.appBaseUrl },
     { label: "Preview base URL", value: configuration.previewBaseUrl },
+    { label: "Preview artifact root", value: configuration.previewArtifactRoot },
     { label: "Operator username", value: configuration.operatorUsername },
     { label: "Operator authentication", value: "Configured" },
     { label: "Postgres database", value: "Configured" },

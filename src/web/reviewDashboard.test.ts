@@ -4,6 +4,11 @@ import { describe, expect, it, vi } from "vitest";
 import type { BusinessContextResearcher } from "../business-context/types.js";
 import type { ContactFinderAgent } from "../contact-finder/types.js";
 import { loadRuntimeConfiguration } from "../config/runtimeConfiguration.js";
+import type {
+  PreviewArtifactStore,
+  WebsiteBuilderAgent,
+  WebsiteDesignerAgent,
+} from "../preview-generation/types.js";
 import { createReviewDashboardApp } from "./app.js";
 import type { WebsiteReviewerAgent } from "../website-assessment/types.js";
 
@@ -720,6 +725,464 @@ describe("Review Dashboard bootstrap slice", () => {
       override: {
         reason: "Operator confirmed this should receive a preview.",
         actor: "operator",
+      },
+    });
+  });
+
+  it("generates an eligible Prospect Business Preview Website with Svelte artifacts and reviewable fields", async () => {
+    const configuration = loadRuntimeConfiguration(baseConfiguration);
+    const auditTrail = createAuditTrailStub();
+    const prospectBusiness = {
+      id: "prospect-1",
+      googlePlaceId: "places/detail-cafe",
+      name: "Detail Cafe",
+      formattedAddress: "1 Detail St, Beacon, NY",
+      categories: ["cafe"],
+      prospectStatus: "assessment_complete" as const,
+      sourceData: { placeId: "places/detail-cafe" },
+      firstSeenAt: new Date("2026-06-20T10:00:00.000Z"),
+      lastSeenAt: new Date("2026-06-21T11:00:00.000Z"),
+      firstDiscoveredRun: discoveryRunStub("run-1"),
+      latestDiscoveredRun: discoveryRunStub("run-1"),
+      appearanceHistory: [],
+      businessContext: {
+        prospectBusinessId: "prospect-1",
+        researchMode: "expanded" as const,
+        sources: [
+          {
+            id: "source-1",
+            prospectBusinessId: "prospect-1",
+            sourceType: "business_website" as const,
+            title: "Detail Cafe menu",
+            url: "https://detail.example/menu",
+            retrievedAt: new Date("2026-06-22T15:00:00.000Z"),
+            termsCompliance: {
+              allowed: true,
+              checkedAt: new Date("2026-06-22T15:00:00.000Z"),
+            },
+          },
+        ],
+        facts: [
+          {
+            id: "fact-1",
+            prospectBusinessId: "prospect-1",
+            sourceId: "source-1",
+            label: "Menu specialty",
+            value: "Detail Cafe serves house-roasted coffee.",
+            allowedForGeneration: true,
+          },
+        ],
+        excludedResearchData: [],
+        supportedClaims: [
+          {
+            id: "claim-1",
+            prospectBusinessId: "prospect-1",
+            statement: "Detail Cafe serves house-roasted coffee.",
+            evidence: [{ sourceId: "source-1", factId: "fact-1" }],
+            allowedForGeneration: true,
+          },
+        ],
+      },
+      websiteAssessment: {
+        id: "assessment-1",
+        prospectBusinessId: "prospect-1",
+        deterministicChecks: {
+          pageLoad: "reachable" as const,
+          https: "valid" as const,
+          mobileViewport: "rendered" as const,
+          contactInformationFound: true,
+          servicesFound: true,
+          brokenAssetsOrConsoleErrors: false,
+          thirdPartyOnlyPresence: false,
+        },
+        opportunityCategory: "outdated_or_low_quality" as const,
+        confidence: 0.77,
+        summary: "The site is reachable, but key cafe details are hard to scan on mobile.",
+        evidence: [
+          {
+            claim: "The mobile screenshot shows contact details below several long sections.",
+            source: "mobile_screenshot" as const,
+          },
+        ],
+        recommendedPitchAngle: "modern_upgrade" as const,
+        safeClaims: ["The current website could make contact details easier to find."],
+        reviewNotes: ["Verify the mobile contact section before outreach."],
+        previewEligibility: {
+          eligibleByDefault: true,
+          effectiveEligible: true,
+          requiresOperatorReview: false,
+          overriddenByOperator: false,
+          reason: "This Opportunity Category is preview-eligible by default.",
+        },
+        assessedAt: new Date("2026-06-22T16:50:00.000Z"),
+      },
+    };
+    const designPlan = {
+      siteType: "multi_section" as const,
+      primaryGoal: "menu_view" as const,
+      targetCustomer: "People in Beacon looking for coffee and a clear menu before visiting.",
+      pitchAngle: "modern_upgrade" as const,
+      sections: [
+        {
+          id: "hero",
+          title: "House-roasted coffee in Beacon",
+          purpose: "Lead with the supported cafe specialty and location.",
+          requiredEvidence: ["Detail Cafe serves house-roasted coffee."],
+          contentGuidance: "Use the supported claim as the hero message.",
+        },
+      ],
+      navigation: {
+        style: "prominent_cta" as const,
+        items: ["Home", "Menu", "Visit"],
+      },
+      features: [
+        {
+          name: "Menu CTA",
+          purpose: "Send visitors to the public menu.",
+          evidence: "https://detail.example/menu",
+        },
+      ],
+      avoid: ["Do not invent prices, hours, reviews, or awards."],
+      operatorReviewNotes: ["Confirm the menu link still works before publication."],
+    };
+    const generatedWebsite = {
+      contentJson: {
+        hero: {
+          headline: "House-roasted coffee in Beacon",
+          body: "Detail Cafe serves house-roasted coffee.",
+        },
+      },
+      sourceFiles: [
+        {
+          relativePath: "src/App.svelte",
+          contents: "<script>export let content;</script><main>{content.hero.headline}</main>",
+        },
+      ],
+      staticAssets: [
+        {
+          relativePath: "dist/index.html",
+          contents: "<!doctype html><meta name=\"robots\" content=\"noindex\"><div id=\"app\"></div>",
+        },
+      ],
+      buildMetadata: {
+        builder: "svelte" as const,
+        command: "npm run build:previews",
+        status: "built" as const,
+      },
+    };
+    const savedPreviewWebsite = {
+      id: "preview-1",
+      prospectBusinessId: "prospect-1",
+      slug: "detail-cafe-prospect-1",
+      status: "ready_for_review" as const,
+      designPlan,
+      contentJson: generatedWebsite.contentJson,
+      sourceReferences: [
+        {
+          sourceId: "source-1",
+          factId: "fact-1",
+          statement: "Detail Cafe serves house-roasted coffee.",
+        },
+      ],
+      buildMetadata: generatedWebsite.buildMetadata,
+      artifact: {
+        sourceRoot: "previews/detail-cafe-prospect-1/source",
+        staticRoot: "previews/detail-cafe-prospect-1/dist",
+        entryFile: "src/App.svelte",
+        indexFile: "dist/index.html",
+      },
+      operatorEditableFields: [
+        {
+          path: "contentJson.hero.headline",
+          label: "Hero headline",
+          value: "House-roasted coffee in Beacon",
+        },
+        {
+          path: "contentJson.hero.body",
+          label: "Hero body",
+          value: "Detail Cafe serves house-roasted coffee.",
+        },
+        {
+          path: "designPlan.sections.0.title",
+          label: "Design plan sections title",
+          value: "House-roasted coffee in Beacon",
+        },
+      ],
+      createdAt: new Date("2026-06-22T19:00:00.000Z"),
+      updatedAt: new Date("2026-06-22T19:00:00.000Z"),
+    };
+    const prospectRegistry = {
+      createDiscoveryRun: vi.fn(),
+      recordDiscoveredProspect: vi.fn(),
+      completeDiscoveryRun: vi.fn(),
+      failDiscoveryRun: vi.fn(),
+      getDiscoveryRunDetail: vi.fn(),
+      listDiscoveryRuns: vi.fn(async () => []),
+      getProspectBusinessDetail: vi.fn(async () => prospectBusiness),
+      savePreviewWebsite: vi.fn(async () => savedPreviewWebsite),
+    };
+    const websiteDesignerAgent: WebsiteDesignerAgent = {
+      design: vi.fn(async () => designPlan),
+    };
+    const websiteBuilderAgent: WebsiteBuilderAgent = {
+      build: vi.fn(async () => generatedWebsite),
+    };
+    const previewArtifactStore: PreviewArtifactStore = {
+      writeArtifacts: vi.fn(async () => savedPreviewWebsite.artifact),
+    };
+
+    const app = createReviewDashboardApp({
+      auditTrail,
+      configuration,
+      prospectRegistry,
+      websiteDesignerAgent,
+      websiteBuilderAgent,
+      previewArtifactStore,
+    });
+    const operator = request.agent(app);
+
+    await operator
+      .post("/login")
+      .type("form")
+      .send({ username: "operator", password: baseConfiguration.OPERATOR_PASSWORD })
+      .expect(302);
+
+    const response = await operator
+      .post("/api/prospect-businesses/prospect-1/preview-website-generation")
+      .send({})
+      .expect(201);
+
+    expect(websiteDesignerAgent.design).toHaveBeenCalledWith({
+      prospectBusiness,
+      businessContext: prospectBusiness.businessContext,
+      websiteAssessment: prospectBusiness.websiteAssessment,
+    });
+    expect(websiteBuilderAgent.build).toHaveBeenCalledWith({
+      prospectBusiness,
+      designPlan,
+      supportedClaims: prospectBusiness.businessContext.supportedClaims,
+    });
+    expect(previewArtifactStore.writeArtifacts).toHaveBeenCalledWith({
+      prospectBusinessId: "prospect-1",
+      slug: "detail-cafe-prospect-1",
+      generatedWebsite,
+    });
+    expect(prospectRegistry.savePreviewWebsite).toHaveBeenCalledWith(expect.objectContaining({
+      prospectBusinessId: "prospect-1",
+      slug: "detail-cafe-prospect-1",
+      status: "ready_for_review",
+      designPlan,
+      contentJson: generatedWebsite.contentJson,
+      sourceReferences: savedPreviewWebsite.sourceReferences,
+      buildMetadata: generatedWebsite.buildMetadata,
+      artifact: savedPreviewWebsite.artifact,
+      operatorEditableFields: expect.arrayContaining(savedPreviewWebsite.operatorEditableFields),
+    }));
+    expect(response.body.previewWebsite).toMatchObject({
+      id: "preview-1",
+      slug: "detail-cafe-prospect-1",
+      status: "ready_for_review",
+      designPlan: {
+        primaryGoal: "menu_view",
+        navigation: {
+          items: ["Home", "Menu", "Visit"],
+        },
+      },
+      contentJson: {
+        hero: {
+          headline: "House-roasted coffee in Beacon",
+        },
+      },
+      artifact: {
+        entryFile: "src/App.svelte",
+        indexFile: "dist/index.html",
+      },
+      operatorEditableFields: [
+        {
+          path: "contentJson.hero.headline",
+          label: "Hero headline",
+        },
+        {
+          path: "contentJson.hero.body",
+          label: "Hero body",
+        },
+        {
+          path: "designPlan.sections.0.title",
+          label: "Design plan sections title",
+        },
+      ],
+    });
+  });
+
+  it("renders Preview Website review controls and lets the operator edit reviewable fields", async () => {
+    const configuration = loadRuntimeConfiguration(baseConfiguration);
+    const auditTrail = createAuditTrailStub();
+    const previewWebsite = {
+      id: "preview-1",
+      prospectBusinessId: "prospect-1",
+      slug: "detail-cafe-prospect-1",
+      status: "ready_for_review" as const,
+      designPlan: {
+        siteType: "multi_section" as const,
+        primaryGoal: "menu_view" as const,
+        targetCustomer: "People in Beacon looking for coffee before visiting.",
+        pitchAngle: "modern_upgrade" as const,
+        sections: [
+          {
+            id: "hero",
+            title: "House-roasted coffee in Beacon",
+            purpose: "Lead with the supported cafe specialty and location.",
+            requiredEvidence: ["Detail Cafe serves house-roasted coffee."],
+            contentGuidance: "Use the supported claim as the hero message.",
+          },
+        ],
+        navigation: {
+          style: "prominent_cta" as const,
+          items: ["Home", "Menu", "Visit"],
+        },
+        features: [],
+        avoid: ["Do not invent prices, hours, reviews, or awards."],
+        operatorReviewNotes: ["Confirm the menu link still works before publication."],
+      },
+      contentJson: {
+        hero: {
+          headline: "House-roasted coffee in Beacon",
+          body: "Detail Cafe serves house-roasted coffee.",
+        },
+      },
+      sourceReferences: [
+        {
+          sourceId: "source-1",
+          factId: "fact-1",
+          statement: "Detail Cafe serves house-roasted coffee.",
+        },
+      ],
+      buildMetadata: {
+        builder: "svelte" as const,
+        command: "npm run build:previews",
+        status: "built" as const,
+      },
+      artifact: {
+        sourceRoot: "detail-cafe-prospect-1/source",
+        staticRoot: "detail-cafe-prospect-1/dist",
+        entryFile: "src/App.svelte",
+        indexFile: "dist/index.html",
+      },
+      operatorEditableFields: [
+        {
+          path: "contentJson.hero.headline",
+          label: "Hero headline",
+          value: "House-roasted coffee in Beacon",
+        },
+        {
+          path: "designPlan.sections.0.title",
+          label: "Hero section title",
+          value: "House-roasted coffee in Beacon",
+        },
+      ],
+      createdAt: new Date("2026-06-22T19:00:00.000Z"),
+      updatedAt: new Date("2026-06-22T19:00:00.000Z"),
+    };
+    const editedPreviewWebsite = {
+      ...previewWebsite,
+      contentJson: {
+        hero: {
+          headline: "Coffee and pastries in Beacon",
+          body: "Detail Cafe serves house-roasted coffee.",
+        },
+      },
+      operatorEditableFields: [
+        {
+          path: "contentJson.hero.headline",
+          label: "Hero headline",
+          value: "Coffee and pastries in Beacon",
+        },
+        previewWebsite.operatorEditableFields[1]!,
+      ],
+    };
+    const prospectBusiness = {
+      id: "prospect-1",
+      googlePlaceId: "places/detail-cafe",
+      name: "Detail Cafe",
+      categories: ["cafe"],
+      prospectStatus: "preview_ready_for_review" as const,
+      sourceData: { placeId: "places/detail-cafe" },
+      firstSeenAt: new Date("2026-06-20T10:00:00.000Z"),
+      lastSeenAt: new Date("2026-06-21T11:00:00.000Z"),
+      firstDiscoveredRun: discoveryRunStub("run-1"),
+      latestDiscoveredRun: discoveryRunStub("run-1"),
+      appearanceHistory: [],
+      previewWebsite,
+    };
+    const prospectRegistry = {
+      createDiscoveryRun: vi.fn(),
+      recordDiscoveredProspect: vi.fn(),
+      completeDiscoveryRun: vi.fn(),
+      failDiscoveryRun: vi.fn(),
+      getDiscoveryRunDetail: vi.fn(),
+      listDiscoveryRuns: vi.fn(async () => []),
+      getProspectBusinessDetail: vi.fn(async () => prospectBusiness),
+      updatePreviewWebsiteOperatorEdits: vi.fn(async () => editedPreviewWebsite),
+    };
+
+    const app = createReviewDashboardApp({ auditTrail, configuration, prospectRegistry });
+    const operator = request.agent(app);
+
+    await operator
+      .post("/login")
+      .type("form")
+      .send({ username: "operator", password: baseConfiguration.OPERATOR_PASSWORD })
+      .expect(302);
+
+    const dashboard = await operator.get("/dashboard").expect(200);
+    expect(dashboard.text).toContain("Preview Website");
+    expect(dashboard.text).toContain("preview-frame");
+    expect(dashboard.text).toContain(
+      'src="/preview-artifacts/${clientEscapeHtml(preview.slug)}/${clientEscapeHtml(String(preview.artifact.indexFile || "dist/index.html"))}">',
+    );
+    expect(dashboard.text).not.toContain('replace(/^dist\\\\//, "")');
+    expect(dashboard.text).toContain("operator-edit-form");
+
+    const detailResponse = await operator.get("/api/prospect-businesses/prospect-1").expect(200);
+    expect(detailResponse.body.prospectBusiness.previewWebsite).toMatchObject({
+      slug: "detail-cafe-prospect-1",
+      operatorEditableFields: [
+        {
+          path: "contentJson.hero.headline",
+          label: "Hero headline",
+        },
+        {
+          path: "designPlan.sections.0.title",
+          label: "Hero section title",
+        },
+      ],
+    });
+
+    const editResponse = await operator
+      .patch("/api/prospect-businesses/prospect-1/preview-website/operator-edits")
+      .send({
+        edits: [
+          {
+            path: "contentJson.hero.headline",
+            value: "Coffee and pastries in Beacon",
+          },
+        ],
+      })
+      .expect(200);
+
+    expect(prospectRegistry.updatePreviewWebsiteOperatorEdits).toHaveBeenCalledWith({
+      prospectBusinessId: "prospect-1",
+      actor: "operator",
+      edits: [
+        {
+          path: "contentJson.hero.headline",
+          value: "Coffee and pastries in Beacon",
+        },
+      ],
+    });
+    expect(editResponse.body.previewWebsite.contentJson).toMatchObject({
+      hero: {
+        headline: "Coffee and pastries in Beacon",
       },
     });
   });

@@ -365,6 +365,172 @@ describe("Postgres Prospect Registry", () => {
 
     await pool.end();
   });
+
+  it("persists Preview Website metadata, generated content, source references, and artifact paths", async () => {
+    const database = newDb();
+    const { Pool } = database.adapters.createPg();
+    const pool = new Pool();
+    const registry = new PostgresProspectRegistry(pool);
+    await pool.query(await readFile(new URL("../src/persistence/schema.sql", import.meta.url), "utf8"));
+
+    const discoveryRun = await runDiscovery({
+      request: discoveryRequest,
+      registry,
+      discoverySource: sourceReturning({
+        googlePlaceId: "places/preview-cafe",
+        name: "Preview Cafe",
+        categories: ["cafe"],
+        sourcePayload: { placeId: "places/preview-cafe" },
+      }),
+    });
+    const prospectBusinessId = discoveryRun.discoveredProspects[0]!.id;
+
+    const previewWebsite = await registry.savePreviewWebsite({
+      prospectBusinessId,
+      slug: "preview-cafe-example",
+      status: "ready_for_review",
+      designPlan: {
+        siteType: "multi_section",
+        primaryGoal: "menu_view",
+        targetCustomer: "Local coffee customers checking the menu before visiting.",
+        pitchAngle: "modern_upgrade",
+        sections: [
+          {
+            id: "hero",
+            title: "Coffee near Main Street",
+            purpose: "Lead with the supported cafe category and location.",
+            requiredEvidence: ["Preview Cafe is categorized as a cafe."],
+            contentGuidance: "Use restrained copy and avoid unsupported menu claims.",
+          },
+        ],
+        navigation: {
+          style: "prominent_cta",
+          items: ["Home", "Menu", "Visit"],
+        },
+        features: [
+          {
+            name: "Menu CTA",
+            purpose: "Let visitors inspect the menu if the operator verifies a URL.",
+            evidence: "Operator editable placeholder.",
+          },
+        ],
+        avoid: ["Do not invent prices, awards, reviews, or opening hours."],
+        operatorReviewNotes: ["Verify the menu CTA before publication."],
+      },
+      contentJson: {
+        hero: {
+          headline: "Coffee near Main Street",
+          body: "Preview Cafe is categorized as a cafe.",
+        },
+      },
+      sourceReferences: [
+        {
+          sourceId: "source-1",
+          factId: "fact-1",
+          statement: "Preview Cafe is categorized as a cafe.",
+        },
+      ],
+      buildMetadata: {
+        builder: "svelte",
+        command: "npm run build:previews",
+        status: "built",
+      },
+      artifact: {
+        sourceRoot: "previews/preview-cafe-example/source",
+        staticRoot: "previews/preview-cafe-example/dist",
+        entryFile: "src/App.svelte",
+        indexFile: "dist/index.html",
+      },
+      operatorEditableFields: [
+        {
+          path: "contentJson.hero.headline",
+          label: "Hero headline",
+          value: "Coffee near Main Street",
+        },
+      ],
+    });
+
+    expect(previewWebsite).toMatchObject({
+      prospectBusinessId,
+      slug: "preview-cafe-example",
+      status: "ready_for_review",
+      designPlan: {
+        primaryGoal: "menu_view",
+        navigation: { items: ["Home", "Menu", "Visit"] },
+      },
+      contentJson: {
+        hero: {
+          headline: "Coffee near Main Street",
+        },
+      },
+      sourceReferences: [
+        {
+          sourceId: "source-1",
+          factId: "fact-1",
+        },
+      ],
+      buildMetadata: {
+        builder: "svelte",
+        status: "built",
+      },
+      artifact: {
+        entryFile: "src/App.svelte",
+        indexFile: "dist/index.html",
+      },
+    });
+
+    const prospectDetail = await registry.getProspectBusinessDetail(prospectBusinessId);
+    expect(prospectDetail.prospectStatus).toBe("preview_ready_for_review");
+    expect(prospectDetail.previewWebsite).toMatchObject({
+      slug: "preview-cafe-example",
+      status: "ready_for_review",
+      operatorEditableFields: [
+        {
+          path: "contentJson.hero.headline",
+          label: "Hero headline",
+        },
+      ],
+    });
+
+    const editedPreviewWebsite = await registry.updatePreviewWebsiteOperatorEdits({
+      prospectBusinessId,
+      actor: "operator",
+      edits: [
+        {
+          path: "contentJson.hero.headline",
+          value: "Coffee and pastries near Main Street",
+        },
+      ],
+    });
+
+    expect(editedPreviewWebsite.contentJson).toMatchObject({
+      hero: {
+        headline: "Coffee and pastries near Main Street",
+      },
+    });
+    expect(editedPreviewWebsite.operatorEditableFields).toContainEqual({
+      path: "contentJson.hero.headline",
+      label: "Hero headline",
+      value: "Coffee and pastries near Main Street",
+    });
+
+    await expect(
+      registry.updatePreviewWebsiteOperatorEdits({
+        prospectBusinessId,
+        actor: "operator",
+        edits: [
+          {
+            path: "buildMetadata.command",
+            value: "rm -rf previews",
+          },
+        ],
+      }),
+    ).rejects.toThrow("not reviewable");
+
+    await expectCount(pool, "preview_websites", prospectBusinessId, 1);
+
+    await pool.end();
+  });
 });
 
 function sourceReturning(place: GooglePlaceResult): BusinessDiscoverySource {

@@ -190,3 +190,21 @@ create table if not exists contact_evidence (
 
 create index if not exists contact_evidence_by_prospect
   on contact_evidence (prospect_business_id, found_at asc);
+
+create table if not exists preview_websites (
+  id uuid primary key,
+  prospect_business_id uuid not null references prospect_businesses(id) on delete cascade,
+  slug text not null unique,
+  status text not null check (status in ('ready_for_review', 'published', 'failed')),
+  design_plan jsonb not null,
+  content_json jsonb not null,
+  source_references jsonb not null,
+  build_metadata jsonb not null,
+  artifact jsonb not null,
+  operator_editable_fields jsonb not null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create unique index if not exists preview_websites_latest_per_prospect
+  on preview_websites (prospect_business_id);

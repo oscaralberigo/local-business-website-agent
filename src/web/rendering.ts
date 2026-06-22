@@ -226,6 +226,50 @@ export function renderDashboardPage(input: {
               <p class="empty-state">No Website Assessment recorded yet.</p>
             </section>
           \`;
+          const preview = prospectBusiness.previewWebsite;
+          const previewMarkup = preview ? \`
+            <section class="preview-website" aria-label="Preview Website">
+              <div class="detail-section-heading">
+                <h3>Preview Website</h3>
+                <span class="run-status">\${clientEscapeHtml(preview.status)}</span>
+              </div>
+              <iframe
+                class="preview-frame"
+                title="Preview Website for \${clientEscapeHtml(prospectBusiness.name)}"
+                src="/preview-artifacts/\${clientEscapeHtml(preview.slug)}/\${clientEscapeHtml(String(preview.artifact.indexFile || "dist/index.html"))}">
+              </iframe>
+              <dl class="prospect-summary">
+                <div><dt>Slug</dt><dd>\${clientEscapeHtml(preview.slug)}</dd></div>
+                <div><dt>Primary goal</dt><dd>\${clientEscapeHtml(preview.designPlan.primaryGoal)}</dd></div>
+                <div><dt>Build status</dt><dd>\${clientEscapeHtml(preview.buildMetadata.status)}</dd></div>
+              </dl>
+              <h4>Source references</h4>
+              \${preview.sourceReferences.length > 0
+                ? \`<ul class="evidence-list">\${preview.sourceReferences.map((reference) => \`
+                    <li><strong>\${clientEscapeHtml(reference.sourceId)} / \${clientEscapeHtml(reference.factId)}</strong><span>\${clientEscapeHtml(reference.statement)}</span></li>
+                  \`).join("")}</ul>\`
+                : \`<p class="empty-state">No source references recorded.</p>\`
+              }
+              <form class="operator-edit-form" data-preview-edit-form data-prospect-id="\${clientEscapeHtml(prospectBusiness.id)}">
+                <h4>Operator Edits</h4>
+                \${preview.operatorEditableFields.map((field) => \`
+                  <label>
+                    <span>\${clientEscapeHtml(field.label)}</span>
+                    <input name="\${clientEscapeHtml(field.path)}" value="\${clientEscapeHtml(field.value)}" />
+                  </label>
+                \`).join("")}
+                <button type="submit">Save Preview Edits</button>
+                <div class="form-message" role="status"></div>
+              </form>
+            </section>
+          \` : \`
+            <section class="preview-website" aria-label="Preview Website">
+              <div class="detail-section-heading">
+                <h3>Preview Website</h3>
+              </div>
+              <p class="empty-state">No Preview Website generated yet.</p>
+            </section>
+          \`;
 
           return \`
             <section class="prospect-detail" aria-label="Prospect Business detail">
@@ -236,6 +280,7 @@ export function renderDashboardPage(input: {
               </dl>
               <ol class="appearance-history">\${history}</ol>
               \${assessmentMarkup}
+              \${previewMarkup}
             </section>
           \`;
         }
@@ -307,6 +352,52 @@ export function renderDashboardPage(input: {
             detailCell.innerHTML = \`<p class="failure">\${clientEscapeHtml(error instanceof Error ? error.message : "Prospect Business detail unavailable")}</p>\`;
           } finally {
             button.disabled = false;
+          }
+        });
+
+        discoveryRuns.addEventListener("submit", async (event) => {
+          const form = event.target instanceof Element ? event.target.closest("[data-preview-edit-form]") : null;
+          if (!(form instanceof HTMLFormElement)) {
+            return;
+          }
+
+          event.preventDefault();
+          const submit = form.querySelector("button");
+          const message = form.querySelector(".form-message");
+          if (submit instanceof HTMLButtonElement) {
+            submit.disabled = true;
+          }
+          if (message) {
+            message.textContent = "Saving Preview Website edits...";
+          }
+
+          const formData = new FormData(form);
+          const edits = Array.from(formData.entries()).map(([path, value]) => ({
+            path,
+            value: String(value),
+          }));
+
+          try {
+            const response = await fetch(\`/api/prospect-businesses/\${encodeURIComponent(form.dataset.prospectId || "")}/preview-website/operator-edits\`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ edits }),
+            });
+            const payload = await response.json();
+            if (!response.ok) {
+              throw new Error(payload.error || "Preview Website edits failed");
+            }
+            if (message) {
+              message.textContent = "Preview Website edits saved.";
+            }
+          } catch (error) {
+            if (message) {
+              message.textContent = error instanceof Error ? error.message : "Preview Website edits failed";
+            }
+          } finally {
+            if (submit instanceof HTMLButtonElement) {
+              submit.disabled = false;
+            }
           }
         });
 
@@ -712,6 +803,34 @@ function renderPage(input: { title: string; body: string }): string {
         padding-top: 12px;
       }
 
+      .preview-website {
+        display: grid;
+        gap: 12px;
+        border-top: 1px solid #e0e5eb;
+        padding-top: 12px;
+      }
+
+      .preview-frame {
+        width: 100%;
+        min-height: 520px;
+        border: 1px solid #c8d1dc;
+        border-radius: 8px;
+        background: #ffffff;
+      }
+
+      .operator-edit-form {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+        padding-top: 4px;
+      }
+
+      .operator-edit-form h4,
+      .operator-edit-form button,
+      .operator-edit-form .form-message {
+        grid-column: 1 / -1;
+      }
+
       .evidence-list {
         display: grid;
         gap: 8px;
@@ -737,7 +856,8 @@ function renderPage(input: { title: string; body: string }): string {
         .run-header,
         .detail-section-heading,
         .run-metadata,
-        .prospect-summary {
+        .prospect-summary,
+        .operator-edit-form {
           display: grid;
           grid-template-columns: 1fr;
         }
