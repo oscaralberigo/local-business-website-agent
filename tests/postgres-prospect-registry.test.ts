@@ -366,6 +366,73 @@ describe("Postgres Prospect Registry", () => {
     await pool.end();
   });
 
+  it("persists Draft Outreach and operator edits for review", async () => {
+    const database = newDb();
+    const { Pool } = database.adapters.createPg();
+    const pool = new Pool();
+    const registry = new PostgresProspectRegistry(pool);
+    await pool.query(await readFile(new URL("../src/persistence/schema.sql", import.meta.url), "utf8"));
+
+    const discoveryRun = await runDiscovery({
+      request: discoveryRequest,
+      registry,
+      discoverySource: sourceReturning({
+        googlePlaceId: "places/outreach-cafe",
+        name: "Outreach Cafe",
+        categories: ["cafe"],
+        sourcePayload: { placeId: "places/outreach-cafe" },
+      }),
+    });
+    const prospectBusinessId = discoveryRun.discoveredProspects[0]!.id;
+
+    const draftOutreach = await registry.saveDraftOutreach({
+      prospectBusinessId,
+      subject: "Website preview for Outreach Cafe",
+      bodyText:
+        "Hi Outreach Cafe team,\nhttps://previews.example.com/published-previews/abc123/\nLogan Sinclair\n100 Main St, Beacon, NY 12508\nReply no thanks and I will not contact you again.",
+      bodyHtml:
+        "<p>Hi Outreach Cafe team</p><p>https://previews.example.com/published-previews/abc123/</p><p>Logan Sinclair</p><p>100 Main St, Beacon, NY 12508</p><p>Reply no thanks and I will not contact you again.</p>",
+      claimsUsed: [
+        {
+          claim: "The current website could make contact details easier to find.",
+          source: "website_assessment.safe_claims",
+        },
+      ],
+      complianceNotes: ["Operator review is required before sending."],
+      requiresOperatorReview: true,
+    });
+
+    expect(draftOutreach).toMatchObject({
+      subject: "Website preview for Outreach Cafe",
+      requiresOperatorReview: true,
+    });
+
+    const editedDraft = await registry.updateDraftOutreachOperatorEdits({
+      prospectBusinessId,
+      actor: "operator",
+      edits: {
+        subject: "A website idea for Outreach Cafe",
+        bodyText: `${draftOutreach.bodyText}\n\nOperator-added note.`,
+      },
+    });
+
+    expect(editedDraft).toMatchObject({
+      id: draftOutreach.id,
+      subject: "A website idea for Outreach Cafe",
+      bodyText: expect.stringContaining("Operator-added note."),
+    });
+
+    const prospectDetail = await registry.getProspectBusinessDetail(prospectBusinessId);
+    expect(prospectDetail.prospectStatus).toBe("outreach_ready_for_review");
+    expect(prospectDetail.draftOutreach).toMatchObject({
+      id: draftOutreach.id,
+      subject: "A website idea for Outreach Cafe",
+    });
+
+    await expectCount(pool, "draft_outreach", prospectBusinessId, 1);
+    await pool.end();
+  });
+
   it("persists Preview Website metadata, generated content, source references, and artifact paths", async () => {
     const database = newDb();
     const { Pool } = database.adapters.createPg();

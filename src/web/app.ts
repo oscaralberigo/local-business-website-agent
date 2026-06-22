@@ -14,6 +14,15 @@ import type {
 import { runDiscovery } from "../discovery/run-discovery.js";
 import { startDiscoveryRunSchema } from "../discovery/start-discovery-run-schema.js";
 import type { BusinessDiscoverySource, ProspectRegistry } from "../discovery/types.js";
+import {
+  draftOutreachForProspect,
+  evaluateOutreachCompliance,
+} from "../outreach/outreach-drafter-agent.js";
+import type {
+  DraftOutreachOperatorEdit,
+  DraftOutreachStore,
+  OutreachDrafterAgent,
+} from "../outreach/types.js";
 import { generatePreviewWebsite } from "../preview-generation/generate-preview-website.js";
 import type {
   PreviewArtifactStore,
@@ -41,7 +50,14 @@ export type ReviewDashboardDependencies = {
   configuration: RuntimeConfiguration;
   discoverySource?: BusinessDiscoverySource;
   prospectRegistry?: ProspectRegistry &
-    Partial<BusinessContextStore & WebsiteAssessmentStore & ContactEvidenceStore & PreviewWebsiteStore>;
+    Partial<
+      BusinessContextStore &
+        WebsiteAssessmentStore &
+        ContactEvidenceStore &
+        PreviewWebsiteStore &
+        DraftOutreachStore
+    >;
+  outreachDrafterAgent?: OutreachDrafterAgent;
   previewArtifactStore?: PreviewArtifactStore;
   previewHost?: PreviewHost;
   websiteBuilderAgent?: WebsiteBuilderAgent;
@@ -55,6 +71,7 @@ export function createReviewDashboardApp({
   contactFinderAgent,
   configuration,
   discoverySource,
+  outreachDrafterAgent,
   prospectRegistry,
   previewArtifactStore,
   previewHost,
@@ -409,6 +426,81 @@ export function createReviewDashboardApp({
     },
   );
 
+  app.post(
+    "/api/prospect-businesses/:id/draft-outreach",
+    requireOperator(configuration),
+    async (request, response) => {
+      if (!prospectRegistry || !prospectRegistry.saveDraftOutreach || !outreachDrafterAgent) {
+        response.status(503).json({ error: "Outreach Drafter is not configured." });
+        return;
+      }
+
+      const senderIdentity = optionalStringFromBody(request.body.senderIdentity);
+      const postalAddress = optionalStringFromBody(request.body.postalAddress);
+      const optOutWording = optionalStringFromBody(request.body.optOutWording);
+      if (!senderIdentity || !postalAddress || !optOutWording) {
+        response.status(400).json({
+          error: "senderIdentity, postalAddress, and optOutWording are required.",
+        });
+        return;
+      }
+
+      const prospectBusiness = await prospectRegistry.getProspectBusinessDetail(request.params.id);
+      const draft = await draftOutreachForProspect({
+        prospectBusiness,
+        drafterAgent: outreachDrafterAgent,
+        senderIdentity,
+        postalAddress,
+        optOutWording,
+      });
+      const complianceDecision = evaluateOutreachCompliance({
+        prospectBusiness,
+        draft,
+        senderIdentity,
+        postalAddress,
+        optOutWording,
+      });
+      if (!complianceDecision.allowed) {
+        response.status(409).json({ error: complianceDecision.reasons.join(" ") });
+        return;
+      }
+
+      const draftOutreach = await prospectRegistry.saveDraftOutreach(draft);
+      await auditTrail.record({
+        actor: configuration.operatorUsername,
+        eventType: "outreach.drafted",
+        summary: `Drafted Outreach for Prospect Business ${request.params.id}.`,
+      });
+
+      response.status(201).json({ draftOutreach });
+    },
+  );
+
+  app.patch(
+    "/api/prospect-businesses/:id/draft-outreach/operator-edits",
+    requireOperator(configuration),
+    async (request, response) => {
+      if (!prospectRegistry || !prospectRegistry.updateDraftOutreachOperatorEdits) {
+        response.status(503).json({ error: "Draft Outreach edits are not configured." });
+        return;
+      }
+
+      const edits = draftOutreachOperatorEditsFromBody(request.body);
+      if (!edits.subject && !edits.bodyText && !edits.bodyHtml) {
+        response.status(400).json({ error: "At least one Draft Outreach edit is required." });
+        return;
+      }
+
+      const draftOutreach = await prospectRegistry.updateDraftOutreachOperatorEdits({
+        prospectBusinessId: request.params.id,
+        actor: configuration.operatorUsername,
+        edits,
+      });
+
+      response.status(200).json({ draftOutreach });
+    },
+  );
+
   app.delete(
     "/api/prospect-businesses/:id/preview-website/publication",
     requireOperator(configuration),
@@ -561,6 +653,15 @@ function previewWebsiteOperatorEditsFromBody(body: unknown): PreviewWebsiteOpera
 
     return [{ path: edit.path, value: edit.value }];
   });
+}
+
+function draftOutreachOperatorEditsFromBody(body: unknown): DraftOutreachOperatorEdit {
+  const record = isRecord(body) ? body : {};
+  return {
+    subject: optionalStringFromBody(record.subject),
+    bodyText: optionalStringFromBody(record.bodyText),
+    bodyHtml: optionalStringFromBody(record.bodyHtml),
+  };
 }
 
 function screenshotFromBody(value: unknown): WebsiteScreenshotInput | undefined {

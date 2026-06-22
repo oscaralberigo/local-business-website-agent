@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { BusinessContextResearcher } from "../business-context/types.js";
 import type { ContactFinderAgent } from "../contact-finder/types.js";
 import { loadRuntimeConfiguration } from "../config/runtimeConfiguration.js";
+import type { OutreachDrafterAgent } from "../outreach/types.js";
 import type {
   PreviewArtifactStore,
   PreviewWebsite,
@@ -1380,6 +1381,181 @@ describe("Review Dashboard bootstrap slice", () => {
         unpublishedBy: "operator",
       },
     });
+  });
+
+  it("lets the operator draft and edit Outreach before approval", async () => {
+    const configuration = loadRuntimeConfiguration(baseConfiguration);
+    const auditTrail = createAuditTrailStub();
+    const draftOutreach = {
+      prospectBusinessId: "prospect-1",
+      subject: "Website preview for Detail Cafe",
+      bodyText:
+        "Hi Detail Cafe team,\n\nI put together a modern upgrade concept: https://previews.example.com/published-previews/abc123/\n\nLogan Sinclair\n100 Main St, Beacon, NY 12508\nReply no thanks and I will not contact you again.",
+      bodyHtml:
+        "<p>Hi Detail Cafe team,</p><p>I put together a modern upgrade concept: https://previews.example.com/published-previews/abc123/</p><p>Logan Sinclair</p><p>100 Main St, Beacon, NY 12508</p><p>Reply no thanks and I will not contact you again.</p>",
+      claimsUsed: [
+        {
+          claim: "The current website could make contact details easier to find.",
+          source: "website_assessment.safe_claims",
+        },
+      ],
+      complianceNotes: ["Operator review is required before sending."],
+      requiresOperatorReview: true,
+    };
+    const savedDraftOutreach = {
+      id: "draft-1",
+      ...draftOutreach,
+      createdAt: new Date("2026-06-22T20:00:00.000Z"),
+      updatedAt: new Date("2026-06-22T20:00:00.000Z"),
+    };
+    const editedDraftOutreach = {
+      ...savedDraftOutreach,
+      subject: "A website idea for Detail Cafe",
+      bodyText: `${savedDraftOutreach.bodyText}\n\nOperator-added note.`,
+      updatedAt: new Date("2026-06-22T20:05:00.000Z"),
+    };
+    const prospectBusiness = {
+      ...prospectBusinessWithPreview({
+        ...previewWebsiteReadyForReview(),
+        status: "published" as const,
+        publication: {
+          previewUrl: "https://previews.example.com/published-previews/abc123/",
+          previewUrlPath: "/published-previews/abc123/",
+          deploymentId: "abc123",
+          buildId: "npm-run-build-previews",
+          noindex: true,
+          publishedAt: new Date("2026-06-22T19:00:00.000Z"),
+          approvedBy: "operator",
+          approvalReason: "Approved for publication.",
+        },
+      }),
+      prospectStatus: "drafting_outreach" as const,
+      contactEvidence: [
+        {
+          id: "contact-1",
+          prospectBusinessId: "prospect-1",
+          emailAddress: "hello@detail.example",
+          sourceUrl: "https://detail.example/contact",
+          sourceType: "business_website" as const,
+          confidence: 0.95,
+          roleClassification: "role" as const,
+          outreachApprovalStatus: "approved" as const,
+          reason: "Published on the official contact page.",
+          foundAt: new Date("2026-06-22T18:30:00.000Z"),
+          approvedAt: new Date("2026-06-22T18:35:00.000Z"),
+          approvedBy: "operator",
+          approvalReason: "Operator verified this is the correct inbox.",
+        },
+      ],
+      websiteAssessment: {
+        id: "assessment-1",
+        prospectBusinessId: "prospect-1",
+        deterministicChecks: {
+          pageLoad: "reachable" as const,
+          https: "valid" as const,
+          mobileViewport: "rendered" as const,
+          contactInformationFound: true,
+          servicesFound: true,
+          brokenAssetsOrConsoleErrors: false,
+          thirdPartyOnlyPresence: false,
+        },
+        opportunityCategory: "outdated_or_low_quality" as const,
+        confidence: 0.77,
+        summary: "The site is reachable, but key cafe details are hard to scan on mobile.",
+        evidence: [],
+        recommendedPitchAngle: "modern_upgrade" as const,
+        safeClaims: ["The current website could make contact details easier to find."],
+        reviewNotes: [],
+        previewEligibility: {
+          eligibleByDefault: true,
+          effectiveEligible: true,
+          requiresOperatorReview: false,
+          overriddenByOperator: false,
+          reason: "This Opportunity Category is preview-eligible by default.",
+        },
+        assessedAt: new Date("2026-06-22T16:50:00.000Z"),
+      },
+      draftOutreach: savedDraftOutreach,
+    };
+    const prospectRegistry = {
+      createDiscoveryRun: vi.fn(),
+      recordDiscoveredProspect: vi.fn(),
+      completeDiscoveryRun: vi.fn(),
+      failDiscoveryRun: vi.fn(),
+      getDiscoveryRunDetail: vi.fn(),
+      listDiscoveryRuns: vi.fn(async () => []),
+      getProspectBusinessDetail: vi.fn(async () => prospectBusiness),
+      saveDraftOutreach: vi.fn(async () => savedDraftOutreach),
+      updateDraftOutreachOperatorEdits: vi.fn(async () => editedDraftOutreach),
+    };
+    const outreachDrafterAgent: OutreachDrafterAgent = {
+      draft: vi.fn(async () => draftOutreach),
+    };
+
+    const app = createReviewDashboardApp({
+      auditTrail,
+      configuration,
+      prospectRegistry,
+      outreachDrafterAgent,
+    });
+    const operator = request.agent(app);
+
+    await operator
+      .post("/login")
+      .type("form")
+      .send({ username: "operator", password: baseConfiguration.OPERATOR_PASSWORD })
+      .expect(302);
+
+    const draftResponse = await operator
+      .post("/api/prospect-businesses/prospect-1/draft-outreach")
+      .send({
+        senderIdentity: "Logan Sinclair",
+        postalAddress: "100 Main St, Beacon, NY 12508",
+        optOutWording: "Reply no thanks and I will not contact you again.",
+      })
+      .expect(201);
+
+    expect(outreachDrafterAgent.draft).toHaveBeenCalledWith({
+      prospectBusiness,
+      senderIdentity: "Logan Sinclair",
+      postalAddress: "100 Main St, Beacon, NY 12508",
+      optOutWording: "Reply no thanks and I will not contact you again.",
+    });
+    expect(prospectRegistry.saveDraftOutreach).toHaveBeenCalledWith(expect.objectContaining({
+      prospectBusinessId: "prospect-1",
+      subject: "Website preview for Detail Cafe",
+      requiresOperatorReview: true,
+    }));
+    expect(draftResponse.body.draftOutreach).toMatchObject({
+      id: "draft-1",
+      subject: "Website preview for Detail Cafe",
+      complianceNotes: ["Operator review is required before sending."],
+    });
+
+    const editResponse = await operator
+      .patch("/api/prospect-businesses/prospect-1/draft-outreach/operator-edits")
+      .send({
+        subject: "A website idea for Detail Cafe",
+        bodyText: editedDraftOutreach.bodyText,
+      })
+      .expect(200);
+
+    expect(prospectRegistry.updateDraftOutreachOperatorEdits).toHaveBeenCalledWith({
+      prospectBusinessId: "prospect-1",
+      actor: "operator",
+      edits: {
+        subject: "A website idea for Detail Cafe",
+        bodyText: editedDraftOutreach.bodyText,
+      },
+    });
+    expect(editResponse.body.draftOutreach).toMatchObject({
+      subject: "A website idea for Detail Cafe",
+      bodyText: expect.stringContaining("Operator-added note."),
+    });
+
+    const dashboard = await operator.get("/dashboard").expect(200);
+    expect(dashboard.text).toContain("Draft Outreach");
+    expect(dashboard.text).toContain("Save Outreach Edits");
   });
 });
 
