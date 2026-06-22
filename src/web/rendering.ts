@@ -189,6 +189,19 @@ export function renderDashboardPage(input: {
               <code>\${clientEscapeHtml(JSON.stringify(appearance.providerPayload))}</code>
             </li>
           \`).join("");
+          const workflowFailures = prospectBusiness.workflowFailures ?? [];
+          const workflowFailureMarkup = workflowFailures.length > 0 ? \`
+            <section class="workflow-failures" aria-label="Workflow Failures">
+              <div class="detail-section-heading">
+                <h3>Workflow Failures</h3>
+              </div>
+              <ul class="evidence-list">
+                \${workflowFailures.map((failure) => \`
+                  <li class="failure">\${clientEscapeHtml(failure.failedStep)}: \${clientEscapeHtml(failure.errorSummary)}\${failure.retryable ? " (retryable)" : ""}</li>
+                \`).join("")}
+              </ul>
+            </section>
+          \` : "";
           const assessment = prospectBusiness.websiteAssessment;
           const assessmentMarkup = assessment ? \`
             <section class="website-assessment" aria-label="Website Assessment">
@@ -289,6 +302,16 @@ export function renderDashboardPage(input: {
             </section>
           \`;
           const draftOutreach = prospectBusiness.draftOutreach;
+          const outreachEmails = prospectBusiness.outreachEmails ?? [];
+          const outreachEmailMarkup = outreachEmails.length > 0
+            ? \`<ul class="evidence-list">\${outreachEmails.map((email) => \`
+                <li>
+                  \${clientEscapeHtml(email.sendStatus)} via \${clientEscapeHtml(email.provider)}
+                  \${email.providerMessageId ? \` (\${clientEscapeHtml(email.providerMessageId)})\` : ""}
+                  to \${clientEscapeHtml(email.recipientEmailAddress)}
+                </li>
+              \`).join("")}</ul>\`
+            : \`<p class="empty-state">No Outreach Email sends recorded.</p>\`;
           const draftOutreachMarkup = draftOutreach ? \`
             <section class="draft-outreach" aria-label="Draft Outreach">
               <div class="detail-section-heading">
@@ -321,6 +344,33 @@ export function renderDashboardPage(input: {
                 <button type="submit">Save Outreach Edits</button>
                 <div class="form-message" role="status"></div>
               </form>
+              <form class="outreach-send-form" data-outreach-send-form data-prospect-id="\${clientEscapeHtml(prospectBusiness.id)}">
+                <h4>Send Outreach</h4>
+                <label>
+                  <span>From email</span>
+                  <input name="fromEmail" required />
+                </label>
+                <label>
+                  <span>Sender identity</span>
+                  <input name="senderIdentity" required />
+                </label>
+                <label>
+                  <span>Postal address</span>
+                  <input name="postalAddress" required />
+                </label>
+                <label>
+                  <span>Opt-out wording</span>
+                  <textarea name="optOutWording" required></textarea>
+                </label>
+                <label>
+                  <span>Outreach Approval reason</span>
+                  <textarea name="approvalReason" required></textarea>
+                </label>
+                <button type="submit">Send Outreach</button>
+                <div class="form-message" role="status"></div>
+              </form>
+              <h4>Send history</h4>
+              \${outreachEmailMarkup}
             </section>
           \` : \`
             <section class="draft-outreach" aria-label="Draft Outreach">
@@ -339,6 +389,7 @@ export function renderDashboardPage(input: {
                 <div><dt>Latest discovered</dt><dd>\${clientEscapeHtml(prospectBusiness.latestDiscoveredRun.searchTerm)} in \${clientEscapeHtml(prospectBusiness.latestDiscoveredRun.searchLocation.label)}</dd></div>
               </dl>
               <ol class="appearance-history">\${history}</ol>
+              \${workflowFailureMarkup}
               \${assessmentMarkup}
               \${previewMarkup}
               \${draftOutreachMarkup}
@@ -581,6 +632,55 @@ export function renderDashboardPage(input: {
           } catch (error) {
             if (message) {
               message.textContent = error instanceof Error ? error.message : "Draft Outreach edits failed";
+            }
+          } finally {
+            if (submit instanceof HTMLButtonElement) {
+              submit.disabled = false;
+            }
+          }
+        });
+
+        discoveryRuns.addEventListener("submit", async (event) => {
+          const form = event.target instanceof Element ? event.target.closest("[data-outreach-send-form]") : null;
+          if (!(form instanceof HTMLFormElement)) {
+            return;
+          }
+
+          event.preventDefault();
+          const submit = form.querySelector("button");
+          const message = form.querySelector(".form-message");
+          if (submit instanceof HTMLButtonElement) {
+            submit.disabled = true;
+          }
+          if (message) {
+            message.textContent = "Sending Outreach...";
+          }
+
+          const formData = new FormData(form);
+          const body = {
+            fromEmail: String(formData.get("fromEmail") || ""),
+            senderIdentity: String(formData.get("senderIdentity") || ""),
+            postalAddress: String(formData.get("postalAddress") || ""),
+            optOutWording: String(formData.get("optOutWording") || ""),
+            approvalReason: String(formData.get("approvalReason") || ""),
+          };
+
+          try {
+            const response = await fetch(\`/api/prospect-businesses/\${encodeURIComponent(form.dataset.prospectId || "")}/outreach-email/send\`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(body),
+            });
+            const payload = await response.json();
+            if (!response.ok) {
+              throw new Error(payload.error || "Outreach Email sending failed");
+            }
+            if (message) {
+              message.textContent = \`Outreach Email sent. Provider message: \${payload.outreachEmail.providerMessageId || "recorded"}\`;
+            }
+          } catch (error) {
+            if (message) {
+              message.textContent = error instanceof Error ? error.message : "Outreach Email sending failed";
             }
           } finally {
             if (submit instanceof HTMLButtonElement) {

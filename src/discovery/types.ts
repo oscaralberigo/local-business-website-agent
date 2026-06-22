@@ -1,6 +1,6 @@
 import type { BusinessContext } from "../business-context/types.js";
 import type { ContactEvidence } from "../contact-finder/types.js";
-import type { DraftOutreach } from "../outreach/types.js";
+import type { DraftOutreach, OutreachEmail } from "../outreach/types.js";
 import type { PreviewWebsite } from "../preview-generation/types.js";
 import type { WebsiteAssessment } from "../website-assessment/types.js";
 
@@ -99,12 +99,13 @@ export type DiscoveryAppearanceDetail = DiscoveryAppearance & {
 
 export type WorkflowFailure = {
   id: string;
-  discoveryRunId: string;
+  discoveryRunId?: string;
+  prospectBusinessId?: string;
   failedStep: string;
   errorSummary: string;
   retryable: boolean;
   operatorVisibleStatus: string;
-  provider: "google_places";
+  provider: "google_places" | "resend";
 };
 
 export type DiscoveryRun = {
@@ -132,6 +133,8 @@ export type ProspectBusinessDetail = ProspectBusiness & {
   businessContext?: BusinessContext;
   contactEvidence?: ContactEvidence[];
   draftOutreach?: DraftOutreach;
+  outreachEmails?: OutreachEmail[];
+  workflowFailures?: WorkflowFailure[];
   previewWebsite?: PreviewWebsite;
   websiteAssessment?: WebsiteAssessment;
 };

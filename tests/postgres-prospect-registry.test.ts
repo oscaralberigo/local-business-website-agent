@@ -433,6 +433,97 @@ describe("Postgres Prospect Registry", () => {
     await pool.end();
   });
 
+  it("persists Outreach Email send metadata, suppression checks, and Workflow Failures", async () => {
+    const database = newDb();
+    const { Pool } = database.adapters.createPg();
+    const pool = new Pool();
+    const registry = new PostgresProspectRegistry(pool);
+    await pool.query(await readFile(new URL("../src/persistence/schema.sql", import.meta.url), "utf8"));
+
+    const discoveryRun = await runDiscovery({
+      request: discoveryRequest,
+      registry,
+      discoverySource: sourceReturning({
+        googlePlaceId: "places/send-cafe",
+        name: "Send Cafe",
+        categories: ["cafe"],
+        sourcePayload: { placeId: "places/send-cafe" },
+      }),
+    });
+    const prospectBusinessId = discoveryRun.discoveredProspects[0]!.id;
+
+    const draftOutreach = await registry.saveDraftOutreach({
+      prospectBusinessId,
+      subject: "Website preview for Send Cafe",
+      bodyText:
+        "Hi Send Cafe team,\nhttps://previews.example.com/published-previews/abc123/\nLogan Sinclair\n100 Main St, Beacon, NY 12508\nReply no thanks and I will not contact you again.",
+      bodyHtml:
+        "<p>Hi Send Cafe team</p><p>https://previews.example.com/published-previews/abc123/</p><p>Logan Sinclair</p><p>100 Main St, Beacon, NY 12508</p><p>Reply no thanks and I will not contact you again.</p>",
+      claimsUsed: [],
+      complianceNotes: ["Operator review is required before sending."],
+      requiresOperatorReview: true,
+    });
+    const outreachEmail = await registry.saveOutreachEmail({
+      prospectBusinessId,
+      draftOutreachId: draftOutreach.id,
+      recipientEmailAddress: "hello@send-cafe.example",
+      provider: "resend",
+      providerMessageId: "resend-message-123",
+      sendStatus: "sent",
+      suppressionStatus: "clear",
+      sentAt: new Date("2026-06-22T21:00:00.000Z"),
+    });
+
+    await registry.recordOutreachSuppression({
+      prospectBusinessId,
+      emailAddress: "hello@send-cafe.example",
+      status: "do_not_contact",
+      reason: "Operator marked the Prospect Business as do-not-contact.",
+    });
+    await registry.recordOutreachWorkflowFailure({
+      prospectBusinessId,
+      failedStep: "outreach_email_send",
+      errorSummary: "Resend rate limit.",
+      retryable: true,
+      provider: "resend",
+    });
+
+    await expect(
+      registry.getOutreachSuppressionStatus({
+        prospectBusinessId,
+        emailAddress: "hello@send-cafe.example",
+      }),
+    ).resolves.toEqual({
+      status: "do_not_contact",
+      reason: "Operator marked the Prospect Business as do-not-contact.",
+    });
+
+    const prospectDetail = await registry.getProspectBusinessDetail(prospectBusinessId);
+    expect(prospectDetail.prospectStatus).toBe("outreach_sent");
+    expect(prospectDetail.outreachEmails).toEqual([
+      expect.objectContaining({
+        id: outreachEmail.id,
+        provider: "resend",
+        providerMessageId: "resend-message-123",
+        sendStatus: "sent",
+        suppressionStatus: "clear",
+        sentAt: new Date("2026-06-22T21:00:00.000Z"),
+      }),
+    ]);
+    expect(prospectDetail.workflowFailures).toEqual([
+      expect.objectContaining({
+        prospectBusinessId,
+        failedStep: "outreach_email_send",
+        errorSummary: "Resend rate limit.",
+        retryable: true,
+        provider: "resend",
+      }),
+    ]);
+
+    await expectCount(pool, "outreach_emails", prospectBusinessId, 1);
+    await pool.end();
+  });
+
   it("persists Preview Website metadata, generated content, source references, and artifact paths", async () => {
     const database = newDb();
     const { Pool } = database.adapters.createPg();

@@ -67,6 +67,7 @@ export type RuntimeConfiguration = {
   databaseUrl: string;
   databaseSsl: boolean;
   googlePlacesApiKey?: string;
+  resendApiKey?: string;
   providers: {
     googlePlacesConfigured: boolean;
     openAiConfigured: boolean;
@@ -99,6 +100,7 @@ export function loadRuntimeConfiguration(environment: NodeJS.ProcessEnv): Runtim
     databaseUrl: parsed.DATABASE_URL,
     databaseSsl: parsed.DATABASE_SSL,
     googlePlacesApiKey: parsed.GOOGLE_PLACES_API_KEY,
+    resendApiKey: parsed.RESEND_API_KEY,
     providers: {
       googlePlacesConfigured: Boolean(parsed.GOOGLE_PLACES_API_KEY),
       openAiConfigured: Boolean(parsed.OPENAI_API_KEY),

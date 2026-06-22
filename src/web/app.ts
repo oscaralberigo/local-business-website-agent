@@ -18,9 +18,14 @@ import {
   draftOutreachForProspect,
   evaluateOutreachCompliance,
 } from "../outreach/outreach-drafter-agent.js";
+import { sendApprovedOutreachEmail } from "../outreach/send-outreach-email.js";
 import type {
   DraftOutreachOperatorEdit,
   DraftOutreachStore,
+  EmailSendingProvider,
+  OutreachEmailStore,
+  OutreachSuppressionStore,
+  OutreachWorkflowFailureStore,
   OutreachDrafterAgent,
 } from "../outreach/types.js";
 import { generatePreviewWebsite } from "../preview-generation/generate-preview-website.js";
@@ -49,13 +54,17 @@ export type ReviewDashboardDependencies = {
   contactFinderAgent?: ContactFinderAgent;
   configuration: RuntimeConfiguration;
   discoverySource?: BusinessDiscoverySource;
+  emailProvider?: EmailSendingProvider;
   prospectRegistry?: ProspectRegistry &
     Partial<
       BusinessContextStore &
         WebsiteAssessmentStore &
         ContactEvidenceStore &
         PreviewWebsiteStore &
-        DraftOutreachStore
+        DraftOutreachStore &
+        OutreachEmailStore &
+        OutreachSuppressionStore &
+        OutreachWorkflowFailureStore
     >;
   outreachDrafterAgent?: OutreachDrafterAgent;
   previewArtifactStore?: PreviewArtifactStore;
@@ -71,6 +80,7 @@ export function createReviewDashboardApp({
   contactFinderAgent,
   configuration,
   discoverySource,
+  emailProvider,
   outreachDrafterAgent,
   prospectRegistry,
   previewArtifactStore,
@@ -498,6 +508,66 @@ export function createReviewDashboardApp({
       });
 
       response.status(200).json({ draftOutreach });
+    },
+  );
+
+  app.post(
+    "/api/prospect-businesses/:id/outreach-email/send",
+    requireOperator(configuration),
+    async (request, response) => {
+      if (
+        !prospectRegistry ||
+        !prospectRegistry.saveOutreachEmail ||
+        !prospectRegistry.getOutreachSuppressionStatus ||
+        !prospectRegistry.recordOutreachWorkflowFailure ||
+        !emailProvider
+      ) {
+        response.status(503).json({ error: "Outreach Email sending is not configured." });
+        return;
+      }
+
+      const fromEmail = optionalStringFromBody(request.body.fromEmail);
+      const senderIdentity = optionalStringFromBody(request.body.senderIdentity);
+      const postalAddress = optionalStringFromBody(request.body.postalAddress);
+      const optOutWording = optionalStringFromBody(request.body.optOutWording);
+      const approvalReason = optionalStringFromBody(request.body.approvalReason);
+      if (!fromEmail || !senderIdentity || !postalAddress || !optOutWording) {
+        response.status(400).json({
+          error: "fromEmail, senderIdentity, postalAddress, and optOutWording are required.",
+        });
+        return;
+      }
+      if (configuration.reviewPolicy.requireReviewBeforeOutreachSending && !approvalReason) {
+        response.status(400).json({ error: "approvalReason is required." });
+        return;
+      }
+
+      const prospectBusiness = await prospectRegistry.getProspectBusinessDetail(request.params.id);
+      try {
+        const outreachEmail = await sendApprovedOutreachEmail({
+          prospectBusiness,
+          emailProvider,
+          outreachEmailStore: prospectRegistry as ProspectRegistry & OutreachEmailStore,
+          suppressionStore: prospectRegistry as ProspectRegistry & OutreachSuppressionStore,
+          workflowFailureStore: prospectRegistry as ProspectRegistry & OutreachWorkflowFailureStore,
+          actor: configuration.operatorUsername,
+          fromEmail,
+          senderIdentity,
+          postalAddress,
+          optOutWording,
+          approvalReason: approvalReason ?? "Review Policy did not require Human Review.",
+        });
+        await auditTrail.record({
+          actor: configuration.operatorUsername,
+          eventType: "outreach.sent",
+          summary: `Sent Outreach Email for Prospect Business ${request.params.id}.`,
+        });
+
+        response.status(200).json({ outreachEmail });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Outreach Email sending failed.";
+        response.status(502).json({ error: message });
+      }
     },
   );
 

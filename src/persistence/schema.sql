@@ -62,6 +62,7 @@ create table if not exists discovery_appearances (
 create table if not exists workflow_failures (
   id uuid primary key,
   discovery_run_id uuid references discovery_runs(id) on delete cascade,
+  prospect_business_id uuid references prospect_businesses(id) on delete cascade,
   failed_step text not null,
   error_summary text not null,
   retryable boolean not null default true,
@@ -69,6 +70,9 @@ create table if not exists workflow_failures (
   provider text not null,
   created_at timestamptz not null default now()
 );
+
+alter table workflow_failures
+  add column if not exists prospect_business_id uuid references prospect_businesses(id) on delete cascade;
 
 create table if not exists business_context_sources (
   id text primary key,
@@ -228,3 +232,36 @@ create table if not exists draft_outreach (
 
 create unique index if not exists draft_outreach_latest_per_prospect
   on draft_outreach (prospect_business_id);
+
+create table if not exists outreach_emails (
+  id uuid primary key,
+  prospect_business_id uuid not null references prospect_businesses(id) on delete cascade,
+  draft_outreach_id uuid references draft_outreach(id) on delete set null,
+  recipient_email_address text not null,
+  provider text not null,
+  provider_message_id text,
+  send_status text not null check (send_status in ('sent', 'failed')),
+  suppression_status text not null check (suppression_status in ('clear', 'suppressed', 'do_not_contact')),
+  sent_at timestamptz,
+  failure_metadata jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists outreach_emails_by_prospect
+  on outreach_emails (prospect_business_id, created_at asc);
+
+create table if not exists outreach_suppressions (
+  id uuid primary key,
+  prospect_business_id uuid references prospect_businesses(id) on delete cascade,
+  email_address text not null,
+  suppression_status text not null check (suppression_status in ('suppressed', 'do_not_contact')),
+  reason text not null,
+  created_at timestamptz not null default now()
+);
+
+create unique index if not exists outreach_suppressions_latest_per_email
+  on outreach_suppressions (email_address);
+
+create index if not exists outreach_suppressions_by_prospect
+  on outreach_suppressions (prospect_business_id, created_at asc);

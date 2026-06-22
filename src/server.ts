@@ -9,6 +9,7 @@ import { loadRuntimeConfiguration } from "./config/runtimeConfiguration.js";
 import { createPostgresPool } from "./database/postgresPool.js";
 import { GooglePlacesDiscoverySource } from "./google-places/google-places-discovery-source.js";
 import { createTemplateOutreachDrafterAgent } from "./outreach/outreach-drafter-agent.js";
+import { createEmailSendingProviderForConfiguration } from "./outreach/email-sending-provider-factory.js";
 import { PostgresProspectRegistry } from "./persistence/postgres-prospect-registry.js";
 import { FileSystemPreviewArtifactStore } from "./preview-generation/file-system-preview-artifact-store.js";
 import { createWebsiteBuilderAgent } from "./preview-generation/website-builder-agent.js";
@@ -38,6 +39,7 @@ async function main(): Promise<void> {
   const websiteDesignerAgent = createWebsiteDesignerAgent();
   const websiteReviewerAgent = createWebsiteReviewerAgent();
   const outreachDrafterAgent = createTemplateOutreachDrafterAgent();
+  const emailProvider = createEmailSendingProviderForConfiguration(configuration);
 
   await auditTrail.initialize();
 
@@ -49,6 +51,7 @@ async function main(): Promise<void> {
     prospectRegistry,
     previewArtifactStore,
     previewHost,
+    emailProvider,
     outreachDrafterAgent,
     websiteBuilderAgent,
     websiteDesignerAgent,
