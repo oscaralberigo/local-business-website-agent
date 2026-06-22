@@ -10,6 +10,7 @@ import { createPostgresPool } from "./database/postgresPool.js";
 import { GooglePlacesDiscoverySource } from "./google-places/google-places-discovery-source.js";
 import { PostgresProspectRegistry } from "./persistence/postgres-prospect-registry.js";
 import { createReviewDashboardApp } from "./web/app.js";
+import { createWebsiteReviewerAgent } from "./website-assessment/website-reviewer-agent.js";
 
 async function main(): Promise<void> {
   const configuration = loadRuntimeConfiguration(process.env);
@@ -22,6 +23,7 @@ async function main(): Promise<void> {
   const businessContextResearcher = createBusinessContextResearcher({
     researchTools: [createGooglePlacesBusinessContextTool()],
   });
+  const websiteReviewerAgent = createWebsiteReviewerAgent();
 
   await auditTrail.initialize();
 
@@ -31,6 +33,7 @@ async function main(): Promise<void> {
     discoverySource,
     businessContextResearcher,
     prospectRegistry,
+    websiteReviewerAgent,
   });
   const server = app.listen(configuration.port, () => {
     console.log(`Review Dashboard listening on port ${configuration.port}`);

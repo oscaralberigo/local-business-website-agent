@@ -22,7 +22,28 @@ create table if not exists prospect_businesses (
   website_url text,
   phone_number text,
   categories text[] not null default '{}',
-  prospect_status text not null default 'discovered',
+  prospect_status text not null default 'discovered' check (
+    prospect_status in (
+      'discovered',
+      'researching',
+      'research_complete',
+      'assessing_website',
+      'assessment_complete',
+      'not_preview_eligible',
+      'generating_preview',
+      'preview_ready_for_review',
+      'preview_published',
+      'finding_contact',
+      'contact_unavailable',
+      'drafting_outreach',
+      'outreach_ready_for_review',
+      'outreach_sent',
+      'replied',
+      'work_won',
+      'archived',
+      'failed'
+    )
+  ),
   source_data jsonb not null,
   first_seen_at timestamptz not null default now(),
   last_seen_at timestamptz not null default now(),
@@ -104,3 +125,44 @@ create table if not exists supported_claims (
   allowed_for_generation boolean not null default true,
   created_at timestamptz not null default now()
 );
+
+create table if not exists website_assessments (
+  id uuid primary key,
+  prospect_business_id uuid not null references prospect_businesses(id) on delete cascade,
+  current_website_url text,
+  html_text text,
+  deterministic_checks jsonb not null,
+  desktop_screenshot jsonb,
+  mobile_screenshot jsonb,
+  opportunity_category text not null check (
+    opportunity_category in (
+      'no_website',
+      'website_unreachable',
+      'social_only',
+      'outdated_or_low_quality',
+      'modern_sufficient',
+      'unknown'
+    )
+  ),
+  confidence double precision not null check (confidence >= 0 and confidence <= 1),
+  summary text not null,
+  evidence jsonb not null,
+  recommended_pitch_angle text not null check (
+    recommended_pitch_angle in (
+      'first_website',
+      'modern_upgrade',
+      'technical_fix',
+      'social_to_owned_site',
+      'no_outreach',
+      'uncertain'
+    )
+  ),
+  safe_claims jsonb not null,
+  review_notes jsonb not null,
+  preview_eligibility jsonb not null,
+  assessed_at timestamptz not null default now(),
+  created_at timestamptz not null default now()
+);
+
+create unique index if not exists website_assessments_latest_per_prospect
+  on website_assessments (prospect_business_id);

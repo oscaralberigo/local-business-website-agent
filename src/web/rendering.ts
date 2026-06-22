@@ -189,6 +189,43 @@ export function renderDashboardPage(input: {
               <code>\${clientEscapeHtml(JSON.stringify(appearance.providerPayload))}</code>
             </li>
           \`).join("");
+          const assessment = prospectBusiness.websiteAssessment;
+          const assessmentMarkup = assessment ? \`
+            <section class="website-assessment" aria-label="Website Assessment">
+              <div class="detail-section-heading">
+                <h3>Website Assessment</h3>
+                <span class="run-status">\${clientEscapeHtml(assessment.opportunityCategory)}</span>
+              </div>
+              <p>\${clientEscapeHtml(assessment.summary)}</p>
+              <dl class="prospect-summary">
+                <div><dt>Confidence</dt><dd>\${clientEscapeHtml(assessment.confidence)}</dd></div>
+                <div><dt>Preview Eligibility</dt><dd>\${assessment.previewEligibility.effectiveEligible ? "Eligible" : "Not eligible"}</dd></div>
+                <div><dt>Operator review</dt><dd>\${assessment.previewEligibility.requiresOperatorReview ? "Required" : "Not required"}</dd></div>
+                <div><dt>Eligibility reason</dt><dd>\${clientEscapeHtml(assessment.previewEligibility.reason)}</dd></div>
+                \${assessment.previewEligibility.override ? \`
+                  <div><dt>Operator override</dt><dd>\${clientEscapeHtml(assessment.previewEligibility.override.reason)} by \${clientEscapeHtml(assessment.previewEligibility.override.actor)}</dd></div>
+                \` : ""}
+              </dl>
+              <h4>Evidence</h4>
+              <ul class="evidence-list">
+                \${assessment.evidence.map((item) => \`
+                  <li><strong>\${clientEscapeHtml(item.source)}</strong><span>\${clientEscapeHtml(item.claim)}</span></li>
+                \`).join("")}
+              </ul>
+              <h4>Safe claims</h4>
+              \${assessment.safeClaims.length > 0
+                ? \`<ul class="evidence-list">\${assessment.safeClaims.map((claim) => \`<li>\${clientEscapeHtml(claim)}</li>\`).join("")}</ul>\`
+                : \`<p class="empty-state">No outreach-safe claims recorded.</p>\`
+              }
+            </section>
+          \` : \`
+            <section class="website-assessment" aria-label="Website Assessment">
+              <div class="detail-section-heading">
+                <h3>Website Assessment</h3>
+              </div>
+              <p class="empty-state">No Website Assessment recorded yet.</p>
+            </section>
+          \`;
 
           return \`
             <section class="prospect-detail" aria-label="Prospect Business detail">
@@ -198,6 +235,7 @@ export function renderDashboardPage(input: {
                 <div><dt>Latest discovered</dt><dd>\${clientEscapeHtml(prospectBusiness.latestDiscoveredRun.searchTerm)} in \${clientEscapeHtml(prospectBusiness.latestDiscoveredRun.searchLocation.label)}</dd></div>
               </dl>
               <ol class="appearance-history">\${history}</ol>
+              \${assessmentMarkup}
             </section>
           \`;
         }
@@ -655,6 +693,41 @@ function renderPage(input: { title: string; body: string }): string {
         color: #5b6470;
       }
 
+      h3,
+      h4 {
+        margin: 0;
+      }
+
+      .detail-section-heading {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      .website-assessment {
+        display: grid;
+        gap: 10px;
+        border-top: 1px solid #e0e5eb;
+        padding-top: 12px;
+      }
+
+      .evidence-list {
+        display: grid;
+        gap: 8px;
+        margin: 0;
+        padding-left: 20px;
+      }
+
+      .evidence-list li {
+        overflow-wrap: anywhere;
+      }
+
+      .evidence-list strong,
+      .evidence-list span {
+        display: block;
+      }
+
       @media (max-width: 840px) {
         .topbar,
         .section-heading,
@@ -662,6 +735,7 @@ function renderPage(input: { title: string; body: string }): string {
         .config-list div,
         .discovery-form,
         .run-header,
+        .detail-section-heading,
         .run-metadata,
         .prospect-summary {
           display: grid;

@@ -1,8 +1,27 @@
 import type { BusinessContext } from "../business-context/types.js";
+import type { WebsiteAssessment } from "../website-assessment/types.js";
 
 export type DiscoveryMode = "place_search" | "radius_search";
 
-export type ProspectStatus = "discovered" | "failed";
+export type ProspectStatus =
+  | "discovered"
+  | "researching"
+  | "research_complete"
+  | "assessing_website"
+  | "assessment_complete"
+  | "not_preview_eligible"
+  | "generating_preview"
+  | "preview_ready_for_review"
+  | "preview_published"
+  | "finding_contact"
+  | "contact_unavailable"
+  | "drafting_outreach"
+  | "outreach_ready_for_review"
+  | "outreach_sent"
+  | "replied"
+  | "work_won"
+  | "archived"
+  | "failed";
 
 export type DiscoveryRunStatus = "running" | "completed" | "failed";
 
@@ -108,6 +127,7 @@ export type ProspectBusinessDetail = ProspectBusiness & {
   latestDiscoveredRun: DiscoveryRun;
   appearanceHistory: DiscoveryAppearanceDetail[];
   businessContext?: BusinessContext;
+  websiteAssessment?: WebsiteAssessment;
 };
 
 export type ProspectRegistry = {
