@@ -3,6 +3,7 @@ import { ZodError } from "zod";
 
 import type { AuditTrailGateway } from "../audit/auditTrail.js";
 import { buildOperatorSessionCookie, readOperatorSession, verifyOperatorCredentials } from "../auth/operatorSession.js";
+import type { BusinessContextResearcher, BusinessContextStore } from "../business-context/types.js";
 import { buildConfigReadout, type RuntimeConfiguration } from "../config/runtimeConfiguration.js";
 import { runDiscovery } from "../discovery/run-discovery.js";
 import { startDiscoveryRunSchema } from "../discovery/start-discovery-run-schema.js";
@@ -11,13 +12,15 @@ import { renderDashboardPage, renderLoginPage } from "./rendering.js";
 
 export type ReviewDashboardDependencies = {
   auditTrail: AuditTrailGateway;
+  businessContextResearcher?: BusinessContextResearcher;
   configuration: RuntimeConfiguration;
   discoverySource?: BusinessDiscoverySource;
-  prospectRegistry?: ProspectRegistry;
+  prospectRegistry?: ProspectRegistry & Partial<BusinessContextStore>;
 };
 
 export function createReviewDashboardApp({
   auditTrail,
+  businessContextResearcher,
   configuration,
   discoverySource,
   prospectRegistry,
@@ -102,6 +105,33 @@ export function createReviewDashboardApp({
       prospectBusiness: await prospectRegistry.getProspectBusinessDetail(request.params.id),
     });
   });
+
+  app.post(
+    "/api/prospect-businesses/:id/business-context-research",
+    requireOperator(configuration),
+    async (request, response) => {
+      if (!prospectRegistry || !prospectRegistry.saveBusinessContext || !businessContextResearcher) {
+        response.status(503).json({ error: "Business Context research is not configured." });
+        return;
+      }
+
+      const prospectBusiness = await prospectRegistry.getProspectBusinessDetail(request.params.id);
+      const researchResult = await businessContextResearcher.research({
+        prospectBusiness,
+        researchMode: "expanded",
+      });
+
+      const businessContext = await prospectRegistry.saveBusinessContext({
+        prospectBusinessId: prospectBusiness.id,
+        researchMode: researchResult.researchMode,
+        sources: researchResult.sources,
+        facts: researchResult.facts,
+        excludedResearchData: researchResult.excludedResearchData,
+      });
+
+      response.status(201).json({ businessContext });
+    },
+  );
 
   app.post("/api/discovery-runs", requireOperator(configuration), async (request, response) => {
     if (!prospectRegistry || !discoverySource) {

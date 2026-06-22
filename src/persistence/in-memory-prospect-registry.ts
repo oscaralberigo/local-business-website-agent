@@ -1,4 +1,14 @@
 import { randomUUID } from "node:crypto";
+import { excludeSourceDisallowedFacts } from "../business-context/source-compliance.js";
+import { deriveSupportedClaims } from "../business-context/supported-claims.js";
+import type {
+  BusinessContext,
+  BusinessContextFact,
+  BusinessContextSource,
+  BusinessContextStore,
+  ExcludedResearchData,
+  ResearchMode,
+} from "../business-context/types.js";
 import type {
   DiscoveryAppearance,
   DiscoveryRun,
@@ -11,12 +21,13 @@ import type {
   WorkflowFailure,
 } from "../discovery/types.js";
 
-export class InMemoryProspectRegistry implements ProspectRegistry {
+export class InMemoryProspectRegistry implements ProspectRegistry, BusinessContextStore {
   private readonly discoveryRuns = new Map<string, DiscoveryRun>();
   private readonly prospectBusinesses = new Map<string, ProspectBusiness>();
   private readonly prospectIdsByGooglePlaceId = new Map<string, string>();
   private readonly discoveryAppearances: DiscoveryAppearance[] = [];
   private readonly workflowFailures: WorkflowFailure[] = [];
+  private readonly businessContexts = new Map<string, BusinessContext>();
 
   async createDiscoveryRun(input: StartDiscoveryRunInput): Promise<DiscoveryRun> {
     const discoveryRun: DiscoveryRun = {
@@ -155,7 +166,64 @@ export class InMemoryProspectRegistry implements ProspectRegistry {
       firstDiscoveredRun: appearanceHistory[0]!.discoveryRun,
       latestDiscoveredRun: appearanceHistory[appearanceHistory.length - 1]!.discoveryRun,
       appearanceHistory,
+      businessContext: this.businessContexts.get(prospectBusinessId),
     };
+  }
+
+  async saveBusinessContext(input: {
+    prospectBusinessId: string;
+    researchMode: ResearchMode;
+    sources: Array<Omit<BusinessContextSource, "id" | "prospectBusinessId" | "retrievedAt"> & {
+      id?: string;
+      retrievedAt?: Date;
+    }>;
+    facts: Array<Omit<BusinessContextFact, "id" | "prospectBusinessId"> & { id?: string }>;
+    excludedResearchData: Array<
+      Omit<ExcludedResearchData, "id" | "prospectBusinessId" | "excludedAt"> & {
+        id?: string;
+        excludedAt?: Date;
+      }
+    >;
+  }): Promise<BusinessContext> {
+    this.requireProspectBusiness(input.prospectBusinessId);
+    const filteredContext = excludeSourceDisallowedFacts({
+      sources: input.sources,
+      facts: input.facts,
+      excludedResearchData: input.excludedResearchData,
+    });
+
+    const sources = input.sources.map((source) => ({
+      ...source,
+      id: source.id ?? randomUUID(),
+      prospectBusinessId: input.prospectBusinessId,
+      retrievedAt: source.retrievedAt ?? new Date(),
+    }));
+    const facts = filteredContext.facts.map((fact) => ({
+      ...fact,
+      id: fact.id ?? randomUUID(),
+      prospectBusinessId: input.prospectBusinessId,
+    }));
+    const excludedResearchData = filteredContext.excludedResearchData.map((excluded) => ({
+      ...excluded,
+      id: excluded.id ?? randomUUID(),
+      prospectBusinessId: input.prospectBusinessId,
+      excludedAt: excluded.excludedAt ?? new Date(),
+    }));
+    const businessContext: BusinessContext = {
+      prospectBusinessId: input.prospectBusinessId,
+      researchMode: input.researchMode,
+      sources,
+      facts,
+      excludedResearchData,
+      supportedClaims: deriveSupportedClaims({
+        prospectBusinessId: input.prospectBusinessId,
+        sources,
+        facts,
+      }),
+    };
+
+    this.businessContexts.set(input.prospectBusinessId, businessContext);
+    return businessContext;
   }
 
   private createProspectBusiness(place: GooglePlaceResult): ProspectBusiness {

@@ -1,6 +1,7 @@
 import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
 
+import type { BusinessContextResearcher } from "../business-context/types.js";
 import { loadRuntimeConfiguration } from "../config/runtimeConfiguration.js";
 import { createReviewDashboardApp } from "./app.js";
 
@@ -211,6 +212,139 @@ describe("Review Dashboard bootstrap slice", () => {
     });
     expect(prospectRegistry.getProspectBusinessDetail).toHaveBeenCalledWith("prospect-1");
   });
+
+  it("lets the operator trigger expanded Business Context research and returns source-backed Supported Claims", async () => {
+    const configuration = loadRuntimeConfiguration(baseConfiguration);
+    const auditTrail = createAuditTrailStub();
+    const prospectBusiness = {
+      id: "prospect-1",
+      googlePlaceId: "places/detail-cafe",
+      name: "Detail Cafe",
+      formattedAddress: "1 Detail St",
+      categories: ["cafe"],
+      prospectStatus: "discovered" as const,
+      sourceData: { placeId: "places/detail-cafe" },
+      firstSeenAt: new Date("2026-06-20T10:00:00.000Z"),
+      lastSeenAt: new Date("2026-06-21T11:00:00.000Z"),
+      firstDiscoveredRun: discoveryRunStub("run-1"),
+      latestDiscoveredRun: discoveryRunStub("run-1"),
+      appearanceHistory: [],
+    };
+    const persistedContext = {
+      prospectBusinessId: "prospect-1",
+      researchMode: "expanded" as const,
+      sources: [
+        {
+          id: "source-1",
+          prospectBusinessId: "prospect-1",
+          sourceType: "business_website" as const,
+          title: "Detail Cafe menu",
+          url: "https://detail.example/menu",
+          retrievedAt: new Date("2026-06-22T15:00:00.000Z"),
+          termsCompliance: {
+            allowed: true,
+            checkedAt: new Date("2026-06-22T15:00:00.000Z"),
+            robotsDirective: "index,follow",
+          },
+        },
+      ],
+      facts: [
+        {
+          id: "fact-1",
+          prospectBusinessId: "prospect-1",
+          sourceId: "source-1",
+          label: "Menu specialty",
+          value: "Detail Cafe serves house-roasted coffee.",
+          sourceQuote: "House-roasted coffee",
+          allowedForGeneration: true,
+        },
+      ],
+      excludedResearchData: [
+        {
+          id: "excluded-1",
+          prospectBusinessId: "prospect-1",
+          sourceId: "source-1",
+          label: "Personal mobile number",
+          valueSummary: "A staff member mobile number appeared on the page.",
+          reason: "personal_contact" as const,
+          excludedAt: new Date("2026-06-22T15:00:00.000Z"),
+        },
+      ],
+      supportedClaims: [
+        {
+          id: "claim-1",
+          prospectBusinessId: "prospect-1",
+          statement: "Detail Cafe serves house-roasted coffee.",
+          evidence: [{ sourceId: "source-1", factId: "fact-1" }],
+          allowedForGeneration: true,
+        },
+      ],
+    };
+    const prospectRegistry = {
+      createDiscoveryRun: vi.fn(),
+      recordDiscoveredProspect: vi.fn(),
+      completeDiscoveryRun: vi.fn(),
+      failDiscoveryRun: vi.fn(),
+      getDiscoveryRunDetail: vi.fn(),
+      listDiscoveryRuns: vi.fn(async () => []),
+      getProspectBusinessDetail: vi.fn(async () => prospectBusiness),
+      saveBusinessContext: vi.fn(async () => persistedContext),
+    };
+    const businessContextResearcher: BusinessContextResearcher = {
+      research: vi.fn(async () => ({
+        researchMode: "expanded" as const,
+        sources: persistedContext.sources.map(({ id: _id, prospectBusinessId: _prospectBusinessId, retrievedAt: _retrievedAt, ...source }) => source),
+        facts: persistedContext.facts.map(({ id: _id, prospectBusinessId: _prospectBusinessId, ...fact }) => fact),
+        excludedResearchData: persistedContext.excludedResearchData.map(({ id: _id, prospectBusinessId: _prospectBusinessId, excludedAt: _excludedAt, ...excluded }) => excluded),
+      })),
+    };
+
+    const app = createReviewDashboardApp({
+      auditTrail,
+      configuration,
+      prospectRegistry,
+      businessContextResearcher,
+    });
+    const operator = request.agent(app);
+
+    await operator
+      .post("/login")
+      .type("form")
+      .send({ username: "operator", password: baseConfiguration.OPERATOR_PASSWORD })
+      .expect(302);
+
+    const response = await operator
+      .post("/api/prospect-businesses/prospect-1/business-context-research")
+      .send({})
+      .expect(201);
+
+    expect(businessContextResearcher.research).toHaveBeenCalledWith({
+      prospectBusiness,
+      researchMode: "expanded",
+    });
+    expect(prospectRegistry.saveBusinessContext).toHaveBeenCalledWith({
+      prospectBusinessId: "prospect-1",
+      researchMode: "expanded",
+      sources: expect.any(Array),
+      facts: expect.any(Array),
+      excludedResearchData: expect.any(Array),
+    });
+    expect(response.body.businessContext).toMatchObject({
+      prospectBusinessId: "prospect-1",
+      researchMode: "expanded",
+      sources: [{ id: "source-1", sourceType: "business_website", url: "https://detail.example/menu" }],
+      facts: [{ id: "fact-1", sourceId: "source-1", allowedForGeneration: true }],
+      excludedResearchData: [{ id: "excluded-1", reason: "personal_contact" }],
+      supportedClaims: [
+        {
+          id: "claim-1",
+          statement: "Detail Cafe serves house-roasted coffee.",
+          evidence: [{ sourceId: "source-1", factId: "fact-1" }],
+          allowedForGeneration: true,
+        },
+      ],
+    });
+  });
 });
 
 function createAuditTrailStub() {
@@ -218,5 +352,19 @@ function createAuditTrailStub() {
     verifyConnection: vi.fn(async () => ({ connected: true })),
     record: vi.fn(async () => undefined),
     listRecent: vi.fn(async () => [])
+  };
+}
+
+function discoveryRunStub(id: string) {
+  return {
+    id,
+    source: "google_places" as const,
+    mode: "place_search" as const,
+    searchTerm: "coffee shop",
+    searchLocation: { label: "Beacon, NY" },
+    discoveryLimit: 10,
+    status: "completed" as const,
+    queryMetadata: {},
+    resultMetadata: {},
   };
 }
