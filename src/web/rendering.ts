@@ -152,6 +152,10 @@ export function renderDashboardPage(input: {
               <td>\${clientEscapeHtml(prospect.formattedAddress)}</td>
               <td>\${clientEscapeHtml(prospect.websiteUrl || "")}</td>
               <td>\${clientEscapeHtml(prospect.prospectStatus)}</td>
+              <td><button class="secondary-button" type="button" data-prospect-id="\${clientEscapeHtml(prospect.id)}">View detail</button></td>
+            </tr>
+            <tr class="prospect-detail-row" hidden>
+              <td colspan="5"></td>
             </tr>
           \`).join("");
           const failures = run.workflowFailures.map((failure) => \`
@@ -169,11 +173,32 @@ export function renderDashboardPage(input: {
                 <div><dt>Result metadata</dt><dd><code>\${clientEscapeHtml(JSON.stringify(run.resultMetadata))}</code></dd></div>
               </dl>
               <table>
-                <thead><tr><th>Prospect Business</th><th>Address</th><th>Website</th><th>Status</th></tr></thead>
-                <tbody>\${prospects || "<tr><td colspan=\\"4\\">No prospects recorded.</td></tr>"}</tbody>
+                <thead><tr><th>Prospect Business</th><th>Address</th><th>Website</th><th>Status</th><th>Detail</th></tr></thead>
+                <tbody>\${prospects || "<tr><td colspan=\\"5\\">No prospects recorded.</td></tr>"}</tbody>
               </table>
               \${failures}
             </article>
+          \`;
+        }
+
+        function renderProspectDetail(prospectBusiness) {
+          const history = prospectBusiness.appearanceHistory.map((appearance) => \`
+            <li>
+              <strong>\${clientEscapeHtml(appearance.discoveryRun.searchTerm)} in \${clientEscapeHtml(appearance.discoveryRun.searchLocation.label)}</strong>
+              <span>Run \${clientEscapeHtml(appearance.discoveryRun.id)} · rank \${clientEscapeHtml(appearance.rank)} · \${clientEscapeHtml(appearance.discoveryRun.mode)}</span>
+              <code>\${clientEscapeHtml(JSON.stringify(appearance.providerPayload))}</code>
+            </li>
+          \`).join("");
+
+          return \`
+            <section class="prospect-detail" aria-label="Prospect Business detail">
+              <dl class="prospect-summary">
+                <div><dt>Google Place ID</dt><dd>\${clientEscapeHtml(prospectBusiness.googlePlaceId)}</dd></div>
+                <div><dt>First discovered</dt><dd>\${clientEscapeHtml(prospectBusiness.firstDiscoveredRun.searchTerm)} in \${clientEscapeHtml(prospectBusiness.firstDiscoveredRun.searchLocation.label)}</dd></div>
+                <div><dt>Latest discovered</dt><dd>\${clientEscapeHtml(prospectBusiness.latestDiscoveredRun.searchTerm)} in \${clientEscapeHtml(prospectBusiness.latestDiscoveredRun.searchLocation.label)}</dd></div>
+              </dl>
+              <ol class="appearance-history">\${history}</ol>
+            </section>
           \`;
         }
 
@@ -210,6 +235,40 @@ export function renderDashboardPage(input: {
             discoveryMessage.textContent = error instanceof Error ? error.message : "Discovery Run failed";
           } finally {
             submit.disabled = false;
+          }
+        });
+
+        discoveryRuns.addEventListener("click", async (event) => {
+          const button = event.target instanceof Element ? event.target.closest("[data-prospect-id]") : null;
+          if (!(button instanceof HTMLButtonElement)) {
+            return;
+          }
+
+          const detailRow = button.closest("tr")?.nextElementSibling;
+          const detailCell = detailRow?.querySelector("td");
+          if (!(detailRow instanceof HTMLTableRowElement) || !detailCell) {
+            return;
+          }
+
+          if (!detailRow.hidden && detailCell.innerHTML !== "") {
+            detailRow.hidden = true;
+            return;
+          }
+
+          button.disabled = true;
+          detailRow.hidden = false;
+          detailCell.innerHTML = "<p class=\\"empty-state\\">Loading Prospect Business detail...</p>";
+          try {
+            const response = await fetch(\`/api/prospect-businesses/\${encodeURIComponent(button.dataset.prospectId || "")}\`);
+            const payload = await response.json();
+            if (!response.ok) {
+              throw new Error(payload.error || "Prospect Business detail unavailable");
+            }
+            detailCell.innerHTML = renderProspectDetail(payload.prospectBusiness);
+          } catch (error) {
+            detailCell.innerHTML = \`<p class="failure">\${clientEscapeHtml(error instanceof Error ? error.message : "Prospect Business detail unavailable")}</p>\`;
+          } finally {
+            button.disabled = false;
           }
         });
 
@@ -337,6 +396,20 @@ function renderPage(input: { title: string; body: string }): string {
         font-weight: 750;
         padding: 10px 14px;
         cursor: pointer;
+      }
+
+      button:disabled {
+        cursor: progress;
+        opacity: 0.72;
+      }
+
+      .secondary-button {
+        min-height: 32px;
+        background: #eef3f7;
+        color: #24313f;
+        border: 1px solid #c8d1dc;
+        padding: 6px 10px;
+        white-space: nowrap;
       }
 
       .error {
@@ -545,6 +618,43 @@ function renderPage(input: { title: string; body: string }): string {
         vertical-align: top;
       }
 
+      .prospect-detail-row td {
+        background: #ffffff;
+      }
+
+      .prospect-detail {
+        display: grid;
+        gap: 12px;
+      }
+
+      .prospect-summary {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+        margin: 0;
+      }
+
+      .prospect-summary div {
+        display: grid;
+        gap: 4px;
+      }
+
+      .appearance-history {
+        display: grid;
+        gap: 8px;
+        margin: 0;
+        padding-left: 20px;
+      }
+
+      .appearance-history li {
+        display: grid;
+        gap: 4px;
+      }
+
+      .appearance-history span {
+        color: #5b6470;
+      }
+
       @media (max-width: 840px) {
         .topbar,
         .section-heading,
@@ -552,7 +662,8 @@ function renderPage(input: { title: string; body: string }): string {
         .config-list div,
         .discovery-form,
         .run-header,
-        .run-metadata {
+        .run-metadata,
+        .prospect-summary {
           display: grid;
           grid-template-columns: 1fr;
         }

@@ -6,6 +6,7 @@ import type {
   DiscoveryRunDetail,
   GooglePlaceResult,
   ProspectBusiness,
+  ProspectBusinessDetail,
   ProspectRegistry,
   SearchLocation,
   StartDiscoveryRunInput,
@@ -131,7 +132,7 @@ export class PostgresProspectRegistry implements ProspectRegistry {
     const discoveryRun = await this.getDiscoveryRun(discoveryRunId);
     const [appearancesResult, prospectsResult, failuresResult] = await Promise.all([
       this.pool.query(
-        `select discovery_run_id, prospect_business_id, rank, provider_payload
+        `select discovery_run_id, prospect_business_id, rank, provider_payload, appeared_at
          from discovery_appearances
          where discovery_run_id = $1
          order by rank asc`,
@@ -171,6 +172,56 @@ export class PostgresProspectRegistry implements ProspectRegistry {
     return Promise.all(
       result.rows.map((row: { id: string }) => this.getDiscoveryRunDetail(row.id)),
     );
+  }
+
+  async getProspectBusinessDetail(prospectBusinessId: string): Promise<ProspectBusinessDetail> {
+    const [prospectResult, appearancesResult] = await Promise.all([
+      this.pool.query(
+        `select *
+         from prospect_businesses
+         where id = $1`,
+        [prospectBusinessId],
+      ),
+      this.pool.query(
+        `select
+           a.discovery_run_id,
+           a.prospect_business_id,
+           a.rank,
+           a.provider_payload,
+           a.appeared_at,
+           d.id as run_id,
+           d.source as run_source,
+           d.mode as run_mode,
+           d.search_term as run_search_term,
+           d.search_location as run_search_location,
+           d.discovery_limit as run_discovery_limit,
+           d.status as run_status,
+           d.query_metadata as run_query_metadata,
+           d.result_metadata as run_result_metadata
+         from discovery_appearances a
+         join discovery_runs d on d.id = a.discovery_run_id
+         where a.prospect_business_id = $1
+         order by a.appeared_at asc, d.created_at asc`,
+        [prospectBusinessId],
+      ),
+    ]);
+
+    const prospectBusiness = prospectResult.rows[0];
+    if (!prospectBusiness) {
+      throw new Error(`Prospect Business not found: ${prospectBusinessId}`);
+    }
+
+    const appearanceHistory = appearancesResult.rows.map(mapAppearanceDetailRow);
+    if (appearanceHistory.length === 0) {
+      throw new Error(`Discovery Appearances not found for Prospect Business: ${prospectBusinessId}`);
+    }
+
+    return {
+      ...mapProspectRow(prospectBusiness),
+      firstDiscoveredRun: appearanceHistory[0]!.discoveryRun,
+      latestDiscoveredRun: appearanceHistory[appearanceHistory.length - 1]!.discoveryRun,
+      appearanceHistory,
+    };
   }
 
   private async getDiscoveryRun(discoveryRunId: string): Promise<DiscoveryRun> {
@@ -261,6 +312,8 @@ function mapProspectRow(row: {
   categories: string[];
   prospect_status: "discovered" | "failed";
   source_data: unknown;
+  first_seen_at: Date;
+  last_seen_at: Date;
 }): ProspectBusiness {
   return {
     id: row.id,
@@ -274,6 +327,8 @@ function mapProspectRow(row: {
     categories: row.categories,
     prospectStatus: row.prospect_status,
     sourceData: row.source_data,
+    firstSeenAt: row.first_seen_at,
+    lastSeenAt: row.last_seen_at,
   };
 }
 
@@ -282,12 +337,46 @@ function mapAppearanceRow(row: {
   prospect_business_id: string;
   rank: number;
   provider_payload: unknown;
+  appeared_at: Date;
 }): DiscoveryAppearance {
   return {
     discoveryRunId: row.discovery_run_id,
     prospectBusinessId: row.prospect_business_id,
     rank: row.rank,
     providerPayload: row.provider_payload,
+    appearedAt: row.appeared_at,
+  };
+}
+
+function mapAppearanceDetailRow(row: {
+  discovery_run_id: string;
+  prospect_business_id: string;
+  rank: number;
+  provider_payload: unknown;
+  appeared_at: Date;
+  run_id: string;
+  run_source: "google_places";
+  run_mode: "place_search" | "radius_search";
+  run_search_term: string;
+  run_search_location: SearchLocation;
+  run_discovery_limit: number;
+  run_status: "running" | "completed" | "failed";
+  run_query_metadata: Record<string, unknown>;
+  run_result_metadata: Record<string, unknown>;
+}): DiscoveryAppearance & { discoveryRun: DiscoveryRun } {
+  return {
+    ...mapAppearanceRow(row),
+    discoveryRun: mapDiscoveryRunRow({
+      id: row.run_id,
+      source: row.run_source,
+      mode: row.run_mode,
+      search_term: row.run_search_term,
+      search_location: row.run_search_location,
+      discovery_limit: row.run_discovery_limit,
+      status: row.run_status,
+      query_metadata: row.run_query_metadata,
+      result_metadata: row.run_result_metadata,
+    }),
   };
 }
 

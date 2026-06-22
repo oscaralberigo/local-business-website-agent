@@ -92,6 +92,17 @@ export function createReviewDashboardApp({
     });
   });
 
+  app.get("/api/prospect-businesses/:id", requireOperator(configuration), async (request, response) => {
+    if (!prospectRegistry) {
+      response.status(503).json({ error: "Prospect registry is not configured." });
+      return;
+    }
+
+    response.status(200).json({
+      prospectBusiness: await prospectRegistry.getProspectBusinessDetail(request.params.id),
+    });
+  });
+
   app.post("/api/discovery-runs", requireOperator(configuration), async (request, response) => {
     if (!prospectRegistry || !discoverySource) {
       response.status(503).json({ error: "Google Places discovery is not configured." });

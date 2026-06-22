@@ -57,6 +57,8 @@ export type ProspectBusiness = {
   categories: string[];
   prospectStatus: ProspectStatus;
   sourceData: unknown;
+  firstSeenAt: Date;
+  lastSeenAt: Date;
 };
 
 export type DiscoveryAppearance = {
@@ -64,6 +66,11 @@ export type DiscoveryAppearance = {
   prospectBusinessId: string;
   rank: number;
   providerPayload: unknown;
+  appearedAt: Date;
+};
+
+export type DiscoveryAppearanceDetail = DiscoveryAppearance & {
+  discoveryRun: DiscoveryRun;
 };
 
 export type WorkflowFailure = {
@@ -94,6 +101,12 @@ export type DiscoveryRunDetail = DiscoveryRun & {
   workflowFailures: WorkflowFailure[];
 };
 
+export type ProspectBusinessDetail = ProspectBusiness & {
+  firstDiscoveredRun: DiscoveryRun;
+  latestDiscoveredRun: DiscoveryRun;
+  appearanceHistory: DiscoveryAppearanceDetail[];
+};
+
 export type ProspectRegistry = {
   createDiscoveryRun(input: StartDiscoveryRunInput): Promise<DiscoveryRun>;
   recordDiscoveredProspect(input: {
@@ -113,5 +126,6 @@ export type ProspectRegistry = {
     retryable: boolean;
   }): Promise<void>;
   getDiscoveryRunDetail(discoveryRunId: string): Promise<DiscoveryRunDetail>;
+  getProspectBusinessDetail(prospectBusinessId: string): Promise<ProspectBusinessDetail>;
   listDiscoveryRuns(): Promise<DiscoveryRunDetail[]>;
 };
