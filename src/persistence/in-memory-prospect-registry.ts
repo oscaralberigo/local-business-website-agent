@@ -31,6 +31,26 @@ import type {
   WorkConversionStatus,
   WorkflowFailure,
 } from "../discovery/types.js";
+import type {
+  DraftOutreach,
+  DraftOutreachOperatorEdit,
+  DraftOutreachStore,
+  OutreachEmail,
+  OutreachEmailStore,
+  OutreachSuppressionCheck,
+  OutreachSuppressionStatus,
+  OutreachSuppressionStore,
+  OutreachWorkflowFailureStore,
+  SaveDraftOutreachInput,
+  SaveOutreachEmailInput,
+} from "../outreach/types.js";
+import type {
+  PreviewPublication,
+  PreviewWebsite,
+  PreviewWebsiteOperatorEdit,
+  PreviewWebsiteStore,
+  SavePreviewWebsiteInput,
+} from "../preview-generation/types.js";
 import { derivePreviewEligibility } from "../website-assessment/preview-eligibility.js";
 import type {
   SaveWebsiteAssessmentInput,
@@ -39,7 +59,17 @@ import type {
 } from "../website-assessment/types.js";
 
 export class InMemoryProspectRegistry
-  implements ProspectRegistry, BusinessContextStore, WebsiteAssessmentStore, ContactEvidenceStore, ManualTrackingStore
+  implements
+    ProspectRegistry,
+    BusinessContextStore,
+    WebsiteAssessmentStore,
+    ContactEvidenceStore,
+    PreviewWebsiteStore,
+    DraftOutreachStore,
+    OutreachEmailStore,
+    OutreachSuppressionStore,
+    OutreachWorkflowFailureStore,
+    ManualTrackingStore
 {
   private readonly discoveryRuns = new Map<string, DiscoveryRun>();
   private readonly prospectBusinesses = new Map<string, ProspectBusiness>();
@@ -49,6 +79,17 @@ export class InMemoryProspectRegistry
   private readonly businessContexts = new Map<string, BusinessContext>();
   private readonly websiteAssessments = new Map<string, WebsiteAssessment>();
   private readonly contactEvidenceByProspect = new Map<string, ContactEvidence[]>();
+  private readonly previewWebsites = new Map<string, PreviewWebsite>();
+  private readonly draftOutreachByProspect = new Map<string, DraftOutreach>();
+  private readonly outreachEmailsByProspect = new Map<string, OutreachEmail[]>();
+  private readonly outreachSuppressionsByEmail = new Map<
+    string,
+    Exclude<OutreachSuppressionStatus, "clear">
+  >();
+  private readonly outreachSuppressionsByProspect = new Map<
+    string,
+    Exclude<OutreachSuppressionStatus, "clear">
+  >();
   private readonly replyTrackingByProspect = new Map<string, ReplyTracking>();
   private readonly workConversionsByProspect = new Map<string, WorkConversion>();
 
@@ -192,6 +233,12 @@ export class InMemoryProspectRegistry
       appearanceHistory,
       businessContext: this.businessContexts.get(prospectBusinessId),
       contactEvidence: this.contactEvidenceByProspect.get(prospectBusinessId) ?? [],
+      draftOutreach: this.draftOutreachByProspect.get(prospectBusinessId),
+      outreachEmails: this.outreachEmailsByProspect.get(prospectBusinessId) ?? [],
+      workflowFailures: this.workflowFailures.filter(
+        (failure) => failure.prospectBusinessId === prospectBusinessId,
+      ),
+      previewWebsite: this.previewWebsites.get(prospectBusinessId),
       websiteAssessment: this.websiteAssessments.get(prospectBusinessId),
       replyTracking: this.replyTrackingByProspect.get(prospectBusinessId),
       workConversion: this.workConversionsByProspect.get(prospectBusinessId),
@@ -220,6 +267,234 @@ export class InMemoryProspectRegistry
     });
 
     return this.getProspectBusinessDetail(input.prospectBusinessId);
+  }
+
+  async savePreviewWebsite(input: SavePreviewWebsiteInput): Promise<PreviewWebsite> {
+    const existing = this.previewWebsites.get(input.prospectBusinessId);
+    const now = new Date();
+    const previewWebsite: PreviewWebsite = {
+      id: existing?.id ?? randomUUID(),
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+      ...input,
+    };
+    const prospectBusiness = this.requireProspectBusiness(input.prospectBusinessId);
+
+    this.previewWebsites.set(input.prospectBusinessId, previewWebsite);
+    this.prospectBusinesses.set(input.prospectBusinessId, {
+      ...prospectBusiness,
+      prospectStatus: prospectStatusFromPreviewWebsite(previewWebsite),
+    });
+
+    return previewWebsite;
+  }
+
+  async updatePreviewWebsiteOperatorEdits(input: {
+    prospectBusinessId: string;
+    actor: string;
+    edits: PreviewWebsiteOperatorEdit[];
+  }): Promise<PreviewWebsite> {
+    const previewWebsite = this.requirePreviewWebsite(input.prospectBusinessId);
+    const contentJson = structuredClone(previewWebsite.contentJson);
+    const designPlan = structuredClone(previewWebsite.designPlan);
+    const operatorEditableFields = structuredClone(previewWebsite.operatorEditableFields);
+    const editablePaths = new Set(operatorEditableFields.map((field) => field.path));
+
+    for (const edit of input.edits) {
+      if (!editablePaths.has(edit.path)) {
+        throw new Error(`Preview Website field is not reviewable: ${edit.path}`);
+      }
+
+      if (edit.path.startsWith("contentJson.")) {
+        setRecordPath(contentJson, edit.path.slice("contentJson.".length), edit.value);
+      } else if (edit.path.startsWith("designPlan.")) {
+        setRecordPath(designPlan, edit.path.slice("designPlan.".length), edit.value);
+      }
+
+      const editableField = operatorEditableFields.find((field) => field.path === edit.path);
+      if (editableField) {
+        editableField.value = edit.value;
+      }
+    }
+
+    const updatedPreviewWebsite: PreviewWebsite = {
+      ...previewWebsite,
+      contentJson,
+      designPlan,
+      operatorEditableFields,
+      updatedAt: new Date(),
+    };
+    this.previewWebsites.set(input.prospectBusinessId, updatedPreviewWebsite);
+    return updatedPreviewWebsite;
+  }
+
+  async publishPreviewWebsite(input: {
+    prospectBusinessId: string;
+    actor: string;
+    approvalReason: string;
+    publication: PreviewPublication;
+  }): Promise<PreviewWebsite> {
+    const prospectBusiness = this.requireProspectBusiness(input.prospectBusinessId);
+    const previewWebsite = this.requirePreviewWebsite(input.prospectBusinessId);
+    const updatedPreviewWebsite: PreviewWebsite = {
+      ...previewWebsite,
+      status: "published",
+      publication: {
+        ...input.publication,
+        approvedBy: input.actor,
+        approvalReason: input.approvalReason,
+      },
+      updatedAt: new Date(),
+    };
+
+    this.previewWebsites.set(input.prospectBusinessId, updatedPreviewWebsite);
+    this.prospectBusinesses.set(input.prospectBusinessId, {
+      ...prospectBusiness,
+      prospectStatus: "preview_published",
+    });
+
+    return updatedPreviewWebsite;
+  }
+
+  async unpublishPreviewWebsite(input: {
+    prospectBusinessId: string;
+    actor: string;
+  }): Promise<PreviewWebsite> {
+    const prospectBusiness = this.requireProspectBusiness(input.prospectBusinessId);
+    const previewWebsite = this.requirePreviewWebsite(input.prospectBusinessId);
+    if (!previewWebsite.publication) {
+      throw new Error(`Published Preview not found: ${input.prospectBusinessId}`);
+    }
+
+    const updatedPreviewWebsite: PreviewWebsite = {
+      ...previewWebsite,
+      status: "ready_for_review",
+      publication: {
+        ...previewWebsite.publication,
+        unpublishedAt: new Date(),
+        unpublishedBy: input.actor,
+      },
+      updatedAt: new Date(),
+    };
+
+    this.previewWebsites.set(input.prospectBusinessId, updatedPreviewWebsite);
+    this.prospectBusinesses.set(input.prospectBusinessId, {
+      ...prospectBusiness,
+      prospectStatus: "preview_ready_for_review",
+    });
+
+    return updatedPreviewWebsite;
+  }
+
+  async saveDraftOutreach(input: SaveDraftOutreachInput): Promise<DraftOutreach> {
+    const prospectBusiness = this.requireProspectBusiness(input.prospectBusinessId);
+    const existing = this.draftOutreachByProspect.get(input.prospectBusinessId);
+    const now = new Date();
+    const draftOutreach: DraftOutreach = {
+      id: existing?.id ?? randomUUID(),
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+      ...input,
+    };
+
+    this.draftOutreachByProspect.set(input.prospectBusinessId, draftOutreach);
+    this.prospectBusinesses.set(input.prospectBusinessId, {
+      ...prospectBusiness,
+      prospectStatus: "outreach_ready_for_review",
+    });
+
+    return draftOutreach;
+  }
+
+  async updateDraftOutreachOperatorEdits(input: {
+    prospectBusinessId: string;
+    actor: string;
+    edits: DraftOutreachOperatorEdit;
+  }): Promise<DraftOutreach> {
+    const draftOutreach = this.draftOutreachByProspect.get(input.prospectBusinessId);
+    if (!draftOutreach) {
+      throw new Error(`Draft Outreach not found: ${input.prospectBusinessId}`);
+    }
+
+    const updatedDraftOutreach: DraftOutreach = {
+      ...draftOutreach,
+      subject: input.edits.subject ?? draftOutreach.subject,
+      bodyText: input.edits.bodyText ?? draftOutreach.bodyText,
+      bodyHtml: input.edits.bodyHtml ?? draftOutreach.bodyHtml,
+      updatedAt: new Date(),
+    };
+    this.draftOutreachByProspect.set(input.prospectBusinessId, updatedDraftOutreach);
+    return updatedDraftOutreach;
+  }
+
+  async saveOutreachEmail(input: SaveOutreachEmailInput): Promise<OutreachEmail> {
+    const prospectBusiness = this.requireProspectBusiness(input.prospectBusinessId);
+    const now = new Date();
+    const outreachEmail: OutreachEmail = {
+      id: randomUUID(),
+      createdAt: now,
+      updatedAt: now,
+      ...input,
+    };
+    const emails = this.outreachEmailsByProspect.get(input.prospectBusinessId) ?? [];
+
+    this.outreachEmailsByProspect.set(input.prospectBusinessId, [...emails, outreachEmail]);
+    if (input.sendStatus === "sent") {
+      this.prospectBusinesses.set(input.prospectBusinessId, {
+        ...prospectBusiness,
+        prospectStatus: "outreach_sent",
+      });
+    }
+
+    return outreachEmail;
+  }
+
+  async getOutreachSuppressionStatus(input: {
+    prospectBusinessId: string;
+    emailAddress: string;
+  }): Promise<OutreachSuppressionCheck> {
+    const emailSuppression = this.outreachSuppressionsByEmail.get(input.emailAddress.toLowerCase());
+    const prospectSuppression = this.outreachSuppressionsByProspect.get(input.prospectBusinessId);
+    const status = emailSuppression ?? prospectSuppression;
+
+    return status ? { status } : { status: "clear" };
+  }
+
+  async recordOutreachSuppression(input: {
+    prospectBusinessId?: string;
+    emailAddress: string;
+    status: Exclude<OutreachSuppressionStatus, "clear">;
+    reason: string;
+  }): Promise<void> {
+    this.outreachSuppressionsByEmail.set(input.emailAddress.toLowerCase(), input.status);
+    if (input.prospectBusinessId) {
+      this.outreachSuppressionsByProspect.set(input.prospectBusinessId, input.status);
+    }
+  }
+
+  async recordOutreachWorkflowFailure(input: {
+    prospectBusinessId: string;
+    failedStep: string;
+    errorSummary: string;
+    retryable: boolean;
+    provider: string;
+  }): Promise<void> {
+    this.workflowFailures.push({
+      id: randomUUID(),
+      prospectBusinessId: input.prospectBusinessId,
+      failedStep: input.failedStep,
+      errorSummary: input.errorSummary,
+      retryable: input.retryable,
+      operatorVisibleStatus: "visible",
+      provider: input.provider,
+      createdAt: new Date(),
+    });
+
+    const prospectBusiness = this.requireProspectBusiness(input.prospectBusinessId);
+    this.prospectBusinesses.set(input.prospectBusinessId, {
+      ...prospectBusiness,
+      prospectStatus: "failed",
+    });
   }
 
   async recordManualWorkConversion(input: {
@@ -547,6 +822,14 @@ export class InMemoryProspectRegistry
     }
     return prospectBusiness;
   }
+
+  private requirePreviewWebsite(prospectBusinessId: string): PreviewWebsite {
+    const previewWebsite = this.previewWebsites.get(prospectBusinessId);
+    if (!previewWebsite) {
+      throw new Error(`Preview Website not found: ${prospectBusinessId}`);
+    }
+    return previewWebsite;
+  }
 }
 
 function deriveProspectStatusFromContactEvidence(
@@ -563,4 +846,29 @@ function deriveProspectStatusFromContactEvidence(
   }
 
   return "contact_unavailable";
+}
+
+function prospectStatusFromPreviewWebsite(
+  previewWebsite: PreviewWebsite,
+): ProspectBusiness["prospectStatus"] {
+  return previewWebsite.status === "published" ? "preview_published" : "preview_ready_for_review";
+}
+
+function setRecordPath(
+  root: Record<string, unknown>,
+  path: string,
+  value: string | number | boolean | null,
+): void {
+  const segments = path.split(".");
+  let current: Record<string, unknown> = root;
+
+  for (const segment of segments.slice(0, -1)) {
+    const existing = current[segment];
+    if (typeof existing !== "object" || existing === null) {
+      throw new Error(`Preview Website field is not editable: ${path}`);
+    }
+    current = existing as Record<string, unknown>;
+  }
+
+  current[segments[segments.length - 1]!] = value;
 }
