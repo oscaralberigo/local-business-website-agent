@@ -19,14 +19,28 @@ import type {
   ProspectBusiness,
   ProspectBusinessDetail,
   ProspectRegistry,
+  ProspectStatus,
   SearchLocation,
   StartDiscoveryRunInput,
   WorkflowFailure,
 } from "../discovery/types.js";
+import { derivePreviewEligibility } from "../website-assessment/preview-eligibility.js";
+import type {
+  PreviewEligibility,
+  RecommendedPitchAngle,
+  SaveWebsiteAssessmentInput,
+  WebsiteAssessment,
+  WebsiteAssessmentEvidence,
+  WebsiteAssessmentStore,
+  WebsiteDeterministicChecks,
+  WebsiteScreenshotInput,
+} from "../website-assessment/types.js";
 
 type Queryable = Pool | PoolClient;
 
-export class PostgresProspectRegistry implements ProspectRegistry, BusinessContextStore {
+export class PostgresProspectRegistry
+  implements ProspectRegistry, BusinessContextStore, WebsiteAssessmentStore
+{
   constructor(private readonly pool: Pool) {}
 
   async createDiscoveryRun(input: StartDiscoveryRunInput): Promise<DiscoveryRun> {
@@ -233,7 +247,177 @@ export class PostgresProspectRegistry implements ProspectRegistry, BusinessConte
       latestDiscoveredRun: appearanceHistory[appearanceHistory.length - 1]!.discoveryRun,
       appearanceHistory,
       businessContext: await this.getBusinessContext(prospectBusinessId),
+      websiteAssessment: await this.getWebsiteAssessment(prospectBusinessId),
     };
+  }
+
+  async saveWebsiteAssessment(input: SaveWebsiteAssessmentInput): Promise<WebsiteAssessment> {
+    const previewEligibility = derivePreviewEligibility({
+      opportunityCategory: input.reviewerOutput.opportunityCategory,
+      override: input.previewEligibilityOverride,
+    });
+    const websiteAssessment: WebsiteAssessment = {
+      id: randomUUID(),
+      prospectBusinessId: input.prospectBusinessId,
+      currentWebsiteUrl: input.input.currentWebsiteUrl,
+      htmlText: input.input.htmlText,
+      deterministicChecks: input.input.deterministicChecks,
+      desktopScreenshot: input.input.desktopScreenshot,
+      mobileScreenshot: input.input.mobileScreenshot,
+      opportunityCategory: input.reviewerOutput.opportunityCategory,
+      confidence: input.reviewerOutput.confidence,
+      summary: input.reviewerOutput.summary,
+      evidence: input.reviewerOutput.evidence,
+      recommendedPitchAngle: input.reviewerOutput.recommendedPitchAngle,
+      safeClaims: input.reviewerOutput.outreachSafeClaims,
+      reviewNotes: input.reviewerOutput.operatorReviewNotes,
+      previewEligibility,
+      assessedAt: input.assessedAt ?? new Date(),
+    };
+    const prospectStatus = previewEligibility.effectiveEligible
+      ? "assessment_complete"
+      : "not_preview_eligible";
+
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      await client.query(
+        `insert into website_assessments
+          (
+            id,
+            prospect_business_id,
+            current_website_url,
+            html_text,
+            deterministic_checks,
+            desktop_screenshot,
+            mobile_screenshot,
+            opportunity_category,
+            confidence,
+            summary,
+            evidence,
+            recommended_pitch_angle,
+            safe_claims,
+            review_notes,
+            preview_eligibility,
+            assessed_at
+          )
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+         on conflict (prospect_business_id) do update
+         set current_website_url = excluded.current_website_url,
+             html_text = excluded.html_text,
+             deterministic_checks = excluded.deterministic_checks,
+             desktop_screenshot = excluded.desktop_screenshot,
+             mobile_screenshot = excluded.mobile_screenshot,
+             opportunity_category = excluded.opportunity_category,
+             confidence = excluded.confidence,
+             summary = excluded.summary,
+             evidence = excluded.evidence,
+             recommended_pitch_angle = excluded.recommended_pitch_angle,
+             safe_claims = excluded.safe_claims,
+             review_notes = excluded.review_notes,
+             preview_eligibility = excluded.preview_eligibility,
+             assessed_at = excluded.assessed_at`,
+        [
+          websiteAssessment.id,
+          websiteAssessment.prospectBusinessId,
+          websiteAssessment.currentWebsiteUrl,
+          websiteAssessment.htmlText,
+          JSON.stringify(websiteAssessment.deterministicChecks),
+          optionalJson(websiteAssessment.desktopScreenshot),
+          optionalJson(websiteAssessment.mobileScreenshot),
+          websiteAssessment.opportunityCategory,
+          websiteAssessment.confidence,
+          websiteAssessment.summary,
+          JSON.stringify(websiteAssessment.evidence),
+          websiteAssessment.recommendedPitchAngle,
+          JSON.stringify(websiteAssessment.safeClaims),
+          JSON.stringify(websiteAssessment.reviewNotes),
+          JSON.stringify(websiteAssessment.previewEligibility),
+          websiteAssessment.assessedAt,
+        ],
+      );
+      await client.query(
+        `update prospect_businesses
+         set prospect_status = $2,
+             updated_at = now()
+         where id = $1`,
+        [input.prospectBusinessId, prospectStatus],
+      );
+      await client.query("commit");
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+
+    return websiteAssessment;
+  }
+
+  async overridePreviewEligibility(input: {
+    prospectBusinessId: string;
+    eligible: boolean;
+    reason: string;
+    actor: string;
+    overriddenAt?: Date;
+  }): Promise<WebsiteAssessment> {
+    const existingAssessment = await this.getWebsiteAssessment(input.prospectBusinessId);
+    if (!existingAssessment) {
+      throw new Error(`Website Assessment not found: ${input.prospectBusinessId}`);
+    }
+
+    const previewEligibility = derivePreviewEligibility({
+      opportunityCategory: existingAssessment.opportunityCategory,
+      override: {
+        eligible: input.eligible,
+        reason: input.reason,
+        actor: input.actor,
+        overriddenAt: input.overriddenAt ?? new Date(),
+      },
+    });
+    const prospectStatus = previewEligibility.effectiveEligible
+      ? "assessment_complete"
+      : "not_preview_eligible";
+
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      await client.query(
+        `update website_assessments
+         set preview_eligibility = $2
+         where prospect_business_id = $1`,
+        [input.prospectBusinessId, JSON.stringify(previewEligibility)],
+      );
+      await client.query(
+        `update prospect_businesses
+         set prospect_status = $2,
+             updated_at = now()
+         where id = $1`,
+        [input.prospectBusinessId, prospectStatus],
+      );
+      await client.query("commit");
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+
+    return {
+      ...existingAssessment,
+      previewEligibility,
+    };
+  }
+
+  async getWebsiteAssessment(prospectBusinessId: string): Promise<WebsiteAssessment | undefined> {
+    const result = await this.pool.query(
+      `select *
+       from website_assessments
+       where prospect_business_id = $1`,
+      [prospectBusinessId],
+    );
+    const row = result.rows[0];
+    return row ? mapWebsiteAssessmentRow(row) : undefined;
   }
 
   async saveBusinessContext(input: {
@@ -512,7 +696,7 @@ function mapProspectRow(row: {
   website_url?: string;
   phone_number?: string;
   categories: string[];
-  prospect_status: "discovered" | "failed";
+  prospect_status: ProspectStatus;
   source_data: unknown;
   first_seen_at: Date;
   last_seen_at: Date;
@@ -532,6 +716,110 @@ function mapProspectRow(row: {
     firstSeenAt: row.first_seen_at,
     lastSeenAt: row.last_seen_at,
   };
+}
+
+function mapWebsiteAssessmentRow(row: {
+  id: string;
+  prospect_business_id: string;
+  current_website_url?: string;
+  html_text?: string;
+  deterministic_checks: WebsiteDeterministicChecks;
+  desktop_screenshot?: WebsiteScreenshotInput | SerializedWebsiteScreenshotInput;
+  mobile_screenshot?: WebsiteScreenshotInput | SerializedWebsiteScreenshotInput;
+  opportunity_category: WebsiteAssessment["opportunityCategory"];
+  confidence: number;
+  summary: string;
+  evidence: WebsiteAssessmentEvidence[];
+  recommended_pitch_angle: RecommendedPitchAngle;
+  safe_claims: string[];
+  review_notes: string[];
+  preview_eligibility: PreviewEligibility | SerializedPreviewEligibility;
+  assessed_at: Date;
+}): WebsiteAssessment {
+  const deterministicChecks = parseJsonb<WebsiteDeterministicChecks>(row.deterministic_checks);
+  const desktopScreenshot = parseJsonb<
+    WebsiteScreenshotInput | SerializedWebsiteScreenshotInput | undefined
+  >(row.desktop_screenshot);
+  const mobileScreenshot = parseJsonb<
+    WebsiteScreenshotInput | SerializedWebsiteScreenshotInput | undefined
+  >(row.mobile_screenshot);
+  const previewEligibility = parseJsonb<PreviewEligibility | SerializedPreviewEligibility>(
+    row.preview_eligibility,
+  );
+
+  return {
+    id: row.id,
+    prospectBusinessId: row.prospect_business_id,
+    currentWebsiteUrl: row.current_website_url,
+    htmlText: row.html_text,
+    deterministicChecks,
+    desktopScreenshot: deserializeScreenshot(desktopScreenshot),
+    mobileScreenshot: deserializeScreenshot(mobileScreenshot),
+    opportunityCategory: row.opportunity_category,
+    confidence: row.confidence,
+    summary: row.summary,
+    evidence: parseJsonb<WebsiteAssessmentEvidence[]>(row.evidence),
+    recommendedPitchAngle: row.recommended_pitch_angle,
+    safeClaims: parseJsonb<string[]>(row.safe_claims),
+    reviewNotes: parseJsonb<string[]>(row.review_notes),
+    previewEligibility: deserializePreviewEligibility(previewEligibility),
+    assessedAt: row.assessed_at,
+  };
+}
+
+type SerializedWebsiteScreenshotInput = Omit<WebsiteScreenshotInput, "capturedAt"> & {
+  capturedAt: string;
+};
+
+type SerializedPreviewEligibility = Omit<PreviewEligibility, "override"> & {
+  override?: Omit<NonNullable<PreviewEligibility["override"]>, "overriddenAt"> & {
+    overriddenAt: string;
+  };
+};
+
+function deserializeScreenshot(
+  screenshot?: WebsiteScreenshotInput | SerializedWebsiteScreenshotInput,
+): WebsiteScreenshotInput | undefined {
+  if (!screenshot) {
+    return undefined;
+  }
+
+  return {
+    ...screenshot,
+    capturedAt:
+      screenshot.capturedAt instanceof Date
+        ? screenshot.capturedAt
+        : new Date(screenshot.capturedAt),
+  };
+}
+
+function deserializePreviewEligibility(
+  previewEligibility: PreviewEligibility | SerializedPreviewEligibility,
+): PreviewEligibility {
+  return {
+    ...previewEligibility,
+    override: previewEligibility.override
+      ? {
+          ...previewEligibility.override,
+          overriddenAt:
+            previewEligibility.override.overriddenAt instanceof Date
+              ? previewEligibility.override.overriddenAt
+              : new Date(previewEligibility.override.overriddenAt),
+        }
+      : undefined,
+  };
+}
+
+function optionalJson(value: unknown): string | undefined {
+  return value === undefined ? undefined : JSON.stringify(value);
+}
+
+function parseJsonb<T>(value: T | string | undefined): T {
+  if (typeof value === "string") {
+    return JSON.parse(value) as T;
+  }
+
+  return value as T;
 }
 
 function mapAppearanceRow(row: {

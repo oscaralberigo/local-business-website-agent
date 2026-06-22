@@ -20,14 +20,21 @@ import type {
   StartDiscoveryRunInput,
   WorkflowFailure,
 } from "../discovery/types.js";
+import { derivePreviewEligibility } from "../website-assessment/preview-eligibility.js";
+import type {
+  SaveWebsiteAssessmentInput,
+  WebsiteAssessment,
+  WebsiteAssessmentStore,
+} from "../website-assessment/types.js";
 
-export class InMemoryProspectRegistry implements ProspectRegistry, BusinessContextStore {
+export class InMemoryProspectRegistry implements ProspectRegistry, BusinessContextStore, WebsiteAssessmentStore {
   private readonly discoveryRuns = new Map<string, DiscoveryRun>();
   private readonly prospectBusinesses = new Map<string, ProspectBusiness>();
   private readonly prospectIdsByGooglePlaceId = new Map<string, string>();
   private readonly discoveryAppearances: DiscoveryAppearance[] = [];
   private readonly workflowFailures: WorkflowFailure[] = [];
   private readonly businessContexts = new Map<string, BusinessContext>();
+  private readonly websiteAssessments = new Map<string, WebsiteAssessment>();
 
   async createDiscoveryRun(input: StartDiscoveryRunInput): Promise<DiscoveryRun> {
     const discoveryRun: DiscoveryRun = {
@@ -167,7 +174,81 @@ export class InMemoryProspectRegistry implements ProspectRegistry, BusinessConte
       latestDiscoveredRun: appearanceHistory[appearanceHistory.length - 1]!.discoveryRun,
       appearanceHistory,
       businessContext: this.businessContexts.get(prospectBusinessId),
+      websiteAssessment: this.websiteAssessments.get(prospectBusinessId),
     };
+  }
+
+  async saveWebsiteAssessment(input: SaveWebsiteAssessmentInput): Promise<WebsiteAssessment> {
+    const prospectBusiness = this.requireProspectBusiness(input.prospectBusinessId);
+    const previewEligibility = derivePreviewEligibility({
+      opportunityCategory: input.reviewerOutput.opportunityCategory,
+      override: input.previewEligibilityOverride,
+    });
+    const websiteAssessment: WebsiteAssessment = {
+      id: randomUUID(),
+      prospectBusinessId: input.prospectBusinessId,
+      currentWebsiteUrl: input.input.currentWebsiteUrl,
+      htmlText: input.input.htmlText,
+      deterministicChecks: input.input.deterministicChecks,
+      desktopScreenshot: input.input.desktopScreenshot,
+      mobileScreenshot: input.input.mobileScreenshot,
+      opportunityCategory: input.reviewerOutput.opportunityCategory,
+      confidence: input.reviewerOutput.confidence,
+      summary: input.reviewerOutput.summary,
+      evidence: input.reviewerOutput.evidence,
+      recommendedPitchAngle: input.reviewerOutput.recommendedPitchAngle,
+      safeClaims: input.reviewerOutput.outreachSafeClaims,
+      reviewNotes: input.reviewerOutput.operatorReviewNotes,
+      previewEligibility,
+      assessedAt: input.assessedAt ?? new Date(),
+    };
+
+    this.websiteAssessments.set(input.prospectBusinessId, websiteAssessment);
+    this.prospectBusinesses.set(input.prospectBusinessId, {
+      ...prospectBusiness,
+      prospectStatus: previewEligibility.effectiveEligible ? "assessment_complete" : "not_preview_eligible",
+    });
+    return websiteAssessment;
+  }
+
+  async getWebsiteAssessment(prospectBusinessId: string): Promise<WebsiteAssessment | undefined> {
+    this.requireProspectBusiness(prospectBusinessId);
+    return this.websiteAssessments.get(prospectBusinessId);
+  }
+
+  async overridePreviewEligibility(input: {
+    prospectBusinessId: string;
+    eligible: boolean;
+    reason: string;
+    actor: string;
+    overriddenAt?: Date;
+  }): Promise<WebsiteAssessment> {
+    const prospectBusiness = this.requireProspectBusiness(input.prospectBusinessId);
+    const existingAssessment = this.websiteAssessments.get(input.prospectBusinessId);
+    if (!existingAssessment) {
+      throw new Error(`Website Assessment not found: ${input.prospectBusinessId}`);
+    }
+
+    const previewEligibility = derivePreviewEligibility({
+      opportunityCategory: existingAssessment.opportunityCategory,
+      override: {
+        eligible: input.eligible,
+        reason: input.reason,
+        actor: input.actor,
+        overriddenAt: input.overriddenAt ?? new Date(),
+      },
+    });
+    const updatedAssessment = {
+      ...existingAssessment,
+      previewEligibility,
+    };
+
+    this.websiteAssessments.set(input.prospectBusinessId, updatedAssessment);
+    this.prospectBusinesses.set(input.prospectBusinessId, {
+      ...prospectBusiness,
+      prospectStatus: previewEligibility.effectiveEligible ? "assessment_complete" : "not_preview_eligible",
+    });
+    return updatedAssessment;
   }
 
   async saveBusinessContext(input: {

@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { BusinessContextResearcher } from "../business-context/types.js";
 import { loadRuntimeConfiguration } from "../config/runtimeConfiguration.js";
 import { createReviewDashboardApp } from "./app.js";
+import type { WebsiteReviewerAgent } from "../website-assessment/types.js";
 
 const baseConfiguration = {
   NODE_ENV: "test",
@@ -343,6 +344,230 @@ describe("Review Dashboard bootstrap slice", () => {
           allowedForGeneration: true,
         },
       ],
+    });
+  });
+
+  it("lets the operator trigger Website Assessment and returns evidence-backed Preview Eligibility", async () => {
+    const configuration = loadRuntimeConfiguration(baseConfiguration);
+    const auditTrail = createAuditTrailStub();
+    const prospectBusiness = {
+      id: "prospect-1",
+      googlePlaceId: "places/detail-cafe",
+      name: "Detail Cafe",
+      websiteUrl: "https://detail.example",
+      categories: ["cafe"],
+      prospectStatus: "discovered" as const,
+      sourceData: { placeId: "places/detail-cafe" },
+      firstSeenAt: new Date("2026-06-20T10:00:00.000Z"),
+      lastSeenAt: new Date("2026-06-21T11:00:00.000Z"),
+      firstDiscoveredRun: discoveryRunStub("run-1"),
+      latestDiscoveredRun: discoveryRunStub("run-1"),
+      appearanceHistory: [],
+    };
+    const websiteAssessment = {
+      id: "assessment-1",
+      prospectBusinessId: "prospect-1",
+      currentWebsiteUrl: "https://detail.example",
+      htmlText: "<main>Detail Cafe</main>",
+      deterministicChecks: {
+        pageLoad: "reachable" as const,
+        https: "valid" as const,
+        mobileViewport: "rendered" as const,
+        contactInformationFound: true,
+        servicesFound: true,
+        brokenAssetsOrConsoleErrors: false,
+        thirdPartyOnlyPresence: false,
+      },
+      opportunityCategory: "outdated_or_low_quality" as const,
+      confidence: 0.77,
+      summary: "The site is reachable, but key cafe details are hard to scan on mobile.",
+      evidence: [
+        {
+          claim: "The mobile screenshot shows contact details below several long sections.",
+          source: "mobile_screenshot" as const,
+        },
+      ],
+      recommendedPitchAngle: "modern_upgrade" as const,
+      safeClaims: ["I noticed the current website could make contact details easier to find."],
+      reviewNotes: ["Verify the mobile contact section before outreach."],
+      previewEligibility: {
+        eligibleByDefault: true,
+        effectiveEligible: true,
+        requiresOperatorReview: false,
+        overriddenByOperator: false,
+        reason: "This Opportunity Category is preview-eligible by default.",
+      },
+      assessedAt: new Date("2026-06-22T16:50:00.000Z"),
+    };
+    const prospectRegistry = {
+      createDiscoveryRun: vi.fn(),
+      recordDiscoveredProspect: vi.fn(),
+      completeDiscoveryRun: vi.fn(),
+      failDiscoveryRun: vi.fn(),
+      getDiscoveryRunDetail: vi.fn(),
+      listDiscoveryRuns: vi.fn(async () => []),
+      getProspectBusinessDetail: vi.fn(async () => prospectBusiness),
+      saveWebsiteAssessment: vi.fn(async () => websiteAssessment),
+      overridePreviewEligibility: vi.fn(),
+      getWebsiteAssessment: vi.fn(),
+    };
+    const websiteReviewerAgent: WebsiteReviewerAgent = {
+      review: vi.fn(async () => ({
+        opportunityCategory: "outdated_or_low_quality" as const,
+        confidence: 0.77,
+        summary: "The site is reachable, but key cafe details are hard to scan on mobile.",
+        evidence: websiteAssessment.evidence,
+        recommendedPitchAngle: "modern_upgrade" as const,
+        outreachSafeClaims: websiteAssessment.safeClaims,
+        operatorReviewNotes: websiteAssessment.reviewNotes,
+      })),
+    };
+
+    const app = createReviewDashboardApp({
+      auditTrail,
+      configuration,
+      prospectRegistry,
+      websiteReviewerAgent,
+    });
+    const operator = request.agent(app);
+
+    await operator
+      .post("/login")
+      .type("form")
+      .send({ username: "operator", password: baseConfiguration.OPERATOR_PASSWORD })
+      .expect(302);
+
+    const response = await operator
+      .post("/api/prospect-businesses/prospect-1/website-assessment")
+      .send({
+        currentWebsiteUrl: "https://detail.example",
+        htmlText: "<main>Detail Cafe</main>",
+        deterministicChecks: websiteAssessment.deterministicChecks,
+        desktopScreenshot: {
+          uri: "s3://screenshots/detail-cafe-desktop.png",
+          capturedAt: "2026-06-22T16:48:00.000Z",
+        },
+        mobileScreenshot: {
+          uri: "s3://screenshots/detail-cafe-mobile.png",
+          capturedAt: "2026-06-22T16:49:00.000Z",
+        },
+      })
+      .expect(201);
+
+    expect(websiteReviewerAgent.review).toHaveBeenCalledWith({
+      prospectBusiness,
+      input: expect.objectContaining({
+        currentWebsiteUrl: "https://detail.example",
+        htmlText: "<main>Detail Cafe</main>",
+        deterministicChecks: websiteAssessment.deterministicChecks,
+      }),
+    });
+    expect(prospectRegistry.saveWebsiteAssessment).toHaveBeenCalledWith({
+      prospectBusinessId: "prospect-1",
+      input: expect.objectContaining({
+        currentWebsiteUrl: "https://detail.example",
+        mobileScreenshot: {
+          uri: "s3://screenshots/detail-cafe-mobile.png",
+          capturedAt: new Date("2026-06-22T16:49:00.000Z"),
+        },
+      }),
+      reviewerOutput: expect.objectContaining({
+        opportunityCategory: "outdated_or_low_quality",
+        confidence: 0.77,
+      }),
+    });
+    expect(response.body.websiteAssessment).toMatchObject({
+      opportunityCategory: "outdated_or_low_quality",
+      evidence: [{ source: "mobile_screenshot" }],
+      previewEligibility: {
+        eligibleByDefault: true,
+        effectiveEligible: true,
+      },
+    });
+
+    const dashboard = await operator.get("/dashboard").expect(200);
+    expect(dashboard.text).toContain("Website Assessment");
+    expect(dashboard.text).toContain("Preview Eligibility");
+  });
+
+  it("lets the operator override Preview Eligibility with a reason", async () => {
+    const configuration = loadRuntimeConfiguration(baseConfiguration);
+    const auditTrail = createAuditTrailStub();
+    const overriddenAssessment = {
+      id: "assessment-1",
+      prospectBusinessId: "prospect-1",
+      deterministicChecks: {
+        pageLoad: "not_checked" as const,
+        https: "not_checked" as const,
+        mobileViewport: "not_checked" as const,
+        contactInformationFound: false,
+        servicesFound: false,
+        brokenAssetsOrConsoleErrors: false,
+        thirdPartyOnlyPresence: false,
+      },
+      opportunityCategory: "unknown" as const,
+      confidence: 0.31,
+      summary: "Evidence is incomplete.",
+      evidence: [],
+      recommendedPitchAngle: "uncertain" as const,
+      safeClaims: [],
+      reviewNotes: [],
+      previewEligibility: {
+        eligibleByDefault: false,
+        effectiveEligible: true,
+        requiresOperatorReview: true,
+        overriddenByOperator: true,
+        reason: "Unknown Website Opportunities require operator review before preview generation.",
+        override: {
+          eligible: true,
+          reason: "Operator confirmed this should receive a preview.",
+          actor: "operator",
+          overriddenAt: new Date("2026-06-22T17:10:00.000Z"),
+        },
+      },
+      assessedAt: new Date("2026-06-22T17:00:00.000Z"),
+    };
+    const prospectRegistry = {
+      createDiscoveryRun: vi.fn(),
+      recordDiscoveredProspect: vi.fn(),
+      completeDiscoveryRun: vi.fn(),
+      failDiscoveryRun: vi.fn(),
+      getDiscoveryRunDetail: vi.fn(),
+      listDiscoveryRuns: vi.fn(async () => []),
+      getProspectBusinessDetail: vi.fn(),
+      overridePreviewEligibility: vi.fn(async () => overriddenAssessment),
+    };
+
+    const app = createReviewDashboardApp({ auditTrail, configuration, prospectRegistry });
+    const operator = request.agent(app);
+
+    await operator
+      .post("/login")
+      .type("form")
+      .send({ username: "operator", password: baseConfiguration.OPERATOR_PASSWORD })
+      .expect(302);
+
+    const response = await operator
+      .post("/api/prospect-businesses/prospect-1/preview-eligibility-override")
+      .send({
+        eligible: true,
+        reason: "Operator confirmed this should receive a preview.",
+      })
+      .expect(200);
+
+    expect(prospectRegistry.overridePreviewEligibility).toHaveBeenCalledWith({
+      prospectBusinessId: "prospect-1",
+      eligible: true,
+      reason: "Operator confirmed this should receive a preview.",
+      actor: "operator",
+    });
+    expect(response.body.websiteAssessment.previewEligibility).toMatchObject({
+      effectiveEligible: true,
+      overriddenByOperator: true,
+      override: {
+        reason: "Operator confirmed this should receive a preview.",
+        actor: "operator",
+      },
     });
   });
 });

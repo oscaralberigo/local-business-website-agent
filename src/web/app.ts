@@ -8,6 +8,13 @@ import { buildConfigReadout, type RuntimeConfiguration } from "../config/runtime
 import { runDiscovery } from "../discovery/run-discovery.js";
 import { startDiscoveryRunSchema } from "../discovery/start-discovery-run-schema.js";
 import type { BusinessDiscoverySource, ProspectRegistry } from "../discovery/types.js";
+import { assessWebsiteOpportunity } from "../website-assessment/assess-website-opportunity.js";
+import type {
+  WebsiteAssessmentInput,
+  WebsiteAssessmentStore,
+  WebsiteReviewerAgent,
+  WebsiteScreenshotInput,
+} from "../website-assessment/types.js";
 import { renderDashboardPage, renderLoginPage } from "./rendering.js";
 
 export type ReviewDashboardDependencies = {
@@ -15,7 +22,8 @@ export type ReviewDashboardDependencies = {
   businessContextResearcher?: BusinessContextResearcher;
   configuration: RuntimeConfiguration;
   discoverySource?: BusinessDiscoverySource;
-  prospectRegistry?: ProspectRegistry & Partial<BusinessContextStore>;
+  prospectRegistry?: ProspectRegistry & Partial<BusinessContextStore & WebsiteAssessmentStore>;
+  websiteReviewerAgent?: WebsiteReviewerAgent;
 };
 
 export function createReviewDashboardApp({
@@ -24,6 +32,7 @@ export function createReviewDashboardApp({
   configuration,
   discoverySource,
   prospectRegistry,
+  websiteReviewerAgent,
 }: ReviewDashboardDependencies) {
   const app = express();
 
@@ -133,6 +142,58 @@ export function createReviewDashboardApp({
     },
   );
 
+  app.post(
+    "/api/prospect-businesses/:id/website-assessment",
+    requireOperator(configuration),
+    async (request, response) => {
+      if (!prospectRegistry || !prospectRegistry.saveWebsiteAssessment || !websiteReviewerAgent) {
+        response.status(503).json({ error: "Website Assessment is not configured." });
+        return;
+      }
+
+      const prospectBusiness = await prospectRegistry.getProspectBusinessDetail(request.params.id);
+      const websiteAssessment = await assessWebsiteOpportunity({
+        prospectBusiness,
+        reviewerAgent: websiteReviewerAgent,
+        assessmentStore: prospectRegistry as ProspectRegistry & WebsiteAssessmentStore,
+        input: websiteAssessmentInputFromBody(request.body),
+      });
+
+      response.status(201).json({ websiteAssessment });
+    },
+  );
+
+  app.post(
+    "/api/prospect-businesses/:id/preview-eligibility-override",
+    requireOperator(configuration),
+    async (request, response) => {
+      if (!prospectRegistry || !prospectRegistry.overridePreviewEligibility) {
+        response.status(503).json({ error: "Preview Eligibility overrides are not configured." });
+        return;
+      }
+
+      if (typeof request.body.eligible !== "boolean") {
+        response.status(400).json({ error: "eligible must be a boolean." });
+        return;
+      }
+
+      const reason = optionalStringFromBody(request.body.reason);
+      if (!reason) {
+        response.status(400).json({ error: "reason is required." });
+        return;
+      }
+
+      const websiteAssessment = await prospectRegistry.overridePreviewEligibility({
+        prospectBusinessId: request.params.id,
+        eligible: request.body.eligible,
+        reason,
+        actor: configuration.operatorUsername,
+      });
+
+      response.status(200).json({ websiteAssessment });
+    },
+  );
+
   app.post("/api/discovery-runs", requireOperator(configuration), async (request, response) => {
     if (!prospectRegistry || !discoverySource) {
       response.status(503).json({ error: "Google Places discovery is not configured." });
@@ -189,4 +250,47 @@ function isAuthenticated(request: Request, configuration: RuntimeConfiguration):
 
 function stringFromBody(value: unknown): string {
   return typeof value === "string" ? value : "";
+}
+
+function websiteAssessmentInputFromBody(body: unknown): WebsiteAssessmentInput {
+  const record = isRecord(body) ? body : {};
+  return {
+    currentWebsiteUrl: optionalStringFromBody(record.currentWebsiteUrl),
+    htmlText: optionalStringFromBody(record.htmlText),
+    deterministicChecks: isRecord(record.deterministicChecks)
+      ? (record.deterministicChecks as WebsiteAssessmentInput["deterministicChecks"])
+      : {
+          pageLoad: "not_checked",
+          https: "not_checked",
+          mobileViewport: "not_checked",
+          contactInformationFound: false,
+          servicesFound: false,
+          brokenAssetsOrConsoleErrors: false,
+          thirdPartyOnlyPresence: false,
+        },
+    desktopScreenshot: screenshotFromBody(record.desktopScreenshot),
+    mobileScreenshot: screenshotFromBody(record.mobileScreenshot),
+    operatorNotes: Array.isArray(record.operatorNotes)
+      ? record.operatorNotes.filter((note): note is string => typeof note === "string")
+      : undefined,
+  };
+}
+
+function optionalStringFromBody(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function screenshotFromBody(value: unknown): WebsiteScreenshotInput | undefined {
+  if (!isRecord(value) || typeof value.uri !== "string" || typeof value.capturedAt !== "string") {
+    return undefined;
+  }
+
+  return {
+    uri: value.uri,
+    capturedAt: new Date(value.capturedAt),
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
