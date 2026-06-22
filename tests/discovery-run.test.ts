@@ -108,4 +108,73 @@ describe("Discovery Runs", () => {
       retryable: true,
     });
   });
+
+  it("deduplicates rediscovered Prospect Businesses by Google Place ID and keeps prospect appearance history", async () => {
+    const registry = new InMemoryProspectRegistry();
+
+    const firstRun = await runDiscovery({
+      request: discoveryRequest,
+      registry,
+      discoverySource: {
+        async searchPlaces() {
+          return [
+            {
+              googlePlaceId: "places/rediscovered-cafe",
+              name: "Rediscovered Cafe",
+              formattedAddress: "1 Old Address, Beacon, NY",
+              websiteUrl: "https://old.example",
+              categories: ["cafe"],
+              sourcePayload: { version: "first" },
+            },
+          ];
+        },
+      },
+    });
+
+    const secondRun = await runDiscovery({
+      request: {
+        ...discoveryRequest,
+        searchTerm: "espresso bar",
+      },
+      registry,
+      discoverySource: {
+        async searchPlaces() {
+          return [
+            {
+              googlePlaceId: "places/rediscovered-cafe",
+              name: "Rediscovered Cafe and Bakery",
+              formattedAddress: "9 New Address, Beacon, NY",
+              websiteUrl: "https://new.example",
+              categories: ["cafe", "bakery"],
+              sourcePayload: { version: "latest" },
+            },
+          ];
+        },
+      },
+    });
+
+    expect(secondRun.discoveredProspects).toHaveLength(1);
+    expect(secondRun.discoveredProspects[0]?.id).toBe(firstRun.discoveredProspects[0]?.id);
+    expect(secondRun.discoveredProspects[0]).toMatchObject({
+      name: "Rediscovered Cafe and Bakery",
+      formattedAddress: "9 New Address, Beacon, NY",
+      websiteUrl: "https://new.example",
+      sourceData: { version: "latest" },
+    });
+
+    const prospectDetail = await registry.getProspectBusinessDetail(
+      secondRun.discoveredProspects[0]!.id,
+    );
+
+    expect(prospectDetail.firstDiscoveredRun.id).toBe(firstRun.id);
+    expect(prospectDetail.latestDiscoveredRun.id).toBe(secondRun.id);
+    expect(prospectDetail.appearanceHistory.map((appearance) => appearance.discoveryRun.id)).toEqual([
+      firstRun.id,
+      secondRun.id,
+    ]);
+    expect(prospectDetail.appearanceHistory.map((appearance) => appearance.providerPayload)).toEqual([
+      { version: "first" },
+      { version: "latest" },
+    ]);
+  });
 });

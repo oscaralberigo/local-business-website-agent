@@ -5,6 +5,7 @@ import type {
   DiscoveryRunDetail,
   GooglePlaceResult,
   ProspectBusiness,
+  ProspectBusinessDetail,
   ProspectRegistry,
   StartDiscoveryRunInput,
   WorkflowFailure,
@@ -61,6 +62,7 @@ export class InMemoryProspectRegistry implements ProspectRegistry {
         prospectBusinessId: prospect.id,
         rank: input.rank,
         providerPayload: input.place.sourcePayload,
+        appearedAt: new Date(),
       });
     }
 
@@ -134,7 +136,30 @@ export class InMemoryProspectRegistry implements ProspectRegistry {
     );
   }
 
+  async getProspectBusinessDetail(prospectBusinessId: string): Promise<ProspectBusinessDetail> {
+    const prospectBusiness = this.requireProspectBusiness(prospectBusinessId);
+    const appearanceHistory = this.discoveryAppearances
+      .filter((appearance) => appearance.prospectBusinessId === prospectBusinessId)
+      .map((appearance) => ({
+        ...appearance,
+        discoveryRun: this.requireDiscoveryRun(appearance.discoveryRunId),
+      }))
+      .sort((left, right) => left.appearedAt.getTime() - right.appearedAt.getTime());
+
+    if (appearanceHistory.length === 0) {
+      throw new Error(`Discovery Appearances not found for Prospect Business: ${prospectBusinessId}`);
+    }
+
+    return {
+      ...prospectBusiness,
+      firstDiscoveredRun: appearanceHistory[0]!.discoveryRun,
+      latestDiscoveredRun: appearanceHistory[appearanceHistory.length - 1]!.discoveryRun,
+      appearanceHistory,
+    };
+  }
+
   private createProspectBusiness(place: GooglePlaceResult): ProspectBusiness {
+    const now = new Date();
     const prospectBusiness: ProspectBusiness = {
       id: randomUUID(),
       googlePlaceId: place.googlePlaceId,
@@ -147,6 +172,8 @@ export class InMemoryProspectRegistry implements ProspectRegistry {
       categories: place.categories,
       prospectStatus: "discovered",
       sourceData: place.sourcePayload,
+      firstSeenAt: now,
+      lastSeenAt: now,
     };
 
     this.prospectBusinesses.set(prospectBusiness.id, prospectBusiness);
@@ -169,6 +196,7 @@ export class InMemoryProspectRegistry implements ProspectRegistry {
       phoneNumber: place.phoneNumber,
       categories: place.categories,
       sourceData: place.sourcePayload,
+      lastSeenAt: new Date(),
     };
 
     this.prospectBusinesses.set(updatedProspect.id, updatedProspect);
