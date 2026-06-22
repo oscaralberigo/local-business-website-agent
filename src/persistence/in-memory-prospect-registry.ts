@@ -21,10 +21,14 @@ import type {
   DiscoveryRun,
   DiscoveryRunDetail,
   GooglePlaceResult,
+  ManualTrackingStore,
   ProspectBusiness,
   ProspectBusinessDetail,
   ProspectRegistry,
+  ReplyTracking,
   StartDiscoveryRunInput,
+  WorkConversion,
+  WorkConversionStatus,
   WorkflowFailure,
 } from "../discovery/types.js";
 import { derivePreviewEligibility } from "../website-assessment/preview-eligibility.js";
@@ -35,7 +39,7 @@ import type {
 } from "../website-assessment/types.js";
 
 export class InMemoryProspectRegistry
-  implements ProspectRegistry, BusinessContextStore, WebsiteAssessmentStore, ContactEvidenceStore
+  implements ProspectRegistry, BusinessContextStore, WebsiteAssessmentStore, ContactEvidenceStore, ManualTrackingStore
 {
   private readonly discoveryRuns = new Map<string, DiscoveryRun>();
   private readonly prospectBusinesses = new Map<string, ProspectBusiness>();
@@ -45,6 +49,8 @@ export class InMemoryProspectRegistry
   private readonly businessContexts = new Map<string, BusinessContext>();
   private readonly websiteAssessments = new Map<string, WebsiteAssessment>();
   private readonly contactEvidenceByProspect = new Map<string, ContactEvidence[]>();
+  private readonly replyTrackingByProspect = new Map<string, ReplyTracking>();
+  private readonly workConversionsByProspect = new Map<string, WorkConversion>();
 
   async createDiscoveryRun(input: StartDiscoveryRunInput): Promise<DiscoveryRun> {
     const discoveryRun: DiscoveryRun = {
@@ -187,7 +193,57 @@ export class InMemoryProspectRegistry
       businessContext: this.businessContexts.get(prospectBusinessId),
       contactEvidence: this.contactEvidenceByProspect.get(prospectBusinessId) ?? [],
       websiteAssessment: this.websiteAssessments.get(prospectBusinessId),
+      replyTracking: this.replyTrackingByProspect.get(prospectBusinessId),
+      workConversion: this.workConversionsByProspect.get(prospectBusinessId),
     };
+  }
+
+  async recordManualReply(input: {
+    prospectBusinessId: string;
+    repliedAt: Date;
+    summary: string;
+    notes?: string;
+    actor: string;
+  }): Promise<ProspectBusinessDetail> {
+    const prospectBusiness = this.requireProspectBusiness(input.prospectBusinessId);
+    this.replyTrackingByProspect.set(input.prospectBusinessId, {
+      prospectBusinessId: input.prospectBusinessId,
+      repliedAt: input.repliedAt,
+      summary: input.summary,
+      notes: input.notes,
+      recordedBy: input.actor,
+      recordedAt: new Date(),
+    });
+    this.prospectBusinesses.set(input.prospectBusinessId, {
+      ...prospectBusiness,
+      prospectStatus: "replied",
+    });
+
+    return this.getProspectBusinessDetail(input.prospectBusinessId);
+  }
+
+  async recordManualWorkConversion(input: {
+    prospectBusinessId: string;
+    conversionStatus: WorkConversionStatus;
+    estimatedValueCents?: number;
+    notes?: string;
+    actor: string;
+  }): Promise<ProspectBusinessDetail> {
+    const prospectBusiness = this.requireProspectBusiness(input.prospectBusinessId);
+    this.workConversionsByProspect.set(input.prospectBusinessId, {
+      prospectBusinessId: input.prospectBusinessId,
+      conversionStatus: input.conversionStatus,
+      estimatedValueCents: input.estimatedValueCents,
+      notes: input.notes,
+      recordedBy: input.actor,
+      recordedAt: new Date(),
+    });
+    this.prospectBusinesses.set(input.prospectBusinessId, {
+      ...prospectBusiness,
+      prospectStatus: input.conversionStatus === "work_won" ? "work_won" : prospectBusiness.prospectStatus,
+    });
+
+    return this.getProspectBusinessDetail(input.prospectBusinessId);
   }
 
   async saveContactEvidence(input: {

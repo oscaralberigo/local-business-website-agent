@@ -764,6 +764,189 @@ describe("Review Dashboard bootstrap slice", () => {
     });
   });
 
+  it("lets the operator manually record Reply Tracking without inbox automation", async () => {
+    const configuration = loadRuntimeConfiguration(baseConfiguration);
+    const auditTrail = createAuditTrailStub();
+    const replyTracking = {
+      prospectBusinessId: "prospect-1",
+      repliedAt: new Date("2026-06-22T22:15:00.000Z"),
+      summary: "The owner replied and asked for pricing.",
+      notes: "Follow up manually with a small-cafe package estimate.",
+      recordedBy: "operator",
+      recordedAt: new Date("2026-06-22T22:16:00.000Z"),
+    };
+    const prospectRegistry = {
+      createDiscoveryRun: vi.fn(),
+      recordDiscoveredProspect: vi.fn(),
+      completeDiscoveryRun: vi.fn(),
+      failDiscoveryRun: vi.fn(),
+      getDiscoveryRunDetail: vi.fn(),
+      listDiscoveryRuns: vi.fn(async () => []),
+      getProspectBusinessDetail: vi.fn(),
+      recordManualReply: vi.fn(async () => ({
+        id: "prospect-1",
+        googlePlaceId: "places/detail-cafe",
+        name: "Detail Cafe",
+        categories: ["cafe"],
+        prospectStatus: "replied" as const,
+        sourceData: { placeId: "places/detail-cafe" },
+        firstSeenAt: new Date("2026-06-20T10:00:00.000Z"),
+        lastSeenAt: new Date("2026-06-21T11:00:00.000Z"),
+        firstDiscoveredRun: discoveryRunStub("run-1"),
+        latestDiscoveredRun: discoveryRunStub("run-1"),
+        appearanceHistory: [],
+        replyTracking,
+      })),
+    };
+
+    const app = createReviewDashboardApp({ auditTrail, configuration, prospectRegistry });
+    const operator = request.agent(app);
+
+    await operator
+      .post("/login")
+      .type("form")
+      .send({ username: "operator", password: baseConfiguration.OPERATOR_PASSWORD })
+      .expect(302);
+
+    const response = await operator
+      .post("/api/prospect-businesses/prospect-1/reply-tracking")
+      .send({
+        repliedAt: "2026-06-22T22:15:00.000Z",
+        summary: "The owner replied and asked for pricing.",
+        notes: "Follow up manually with a small-cafe package estimate.",
+      })
+      .expect(200);
+
+    expect(prospectRegistry.recordManualReply).toHaveBeenCalledWith({
+      prospectBusinessId: "prospect-1",
+      repliedAt: new Date("2026-06-22T22:15:00.000Z"),
+      summary: "The owner replied and asked for pricing.",
+      notes: "Follow up manually with a small-cafe package estimate.",
+      actor: "operator",
+    });
+    expect(response.body.prospectBusiness).toMatchObject({
+      id: "prospect-1",
+      prospectStatus: "replied",
+      replyTracking: {
+        summary: "The owner replied and asked for pricing.",
+        notes: "Follow up manually with a small-cafe package estimate.",
+        recordedBy: "operator",
+      },
+    });
+    expect(auditTrail.record).toHaveBeenCalledWith(expect.objectContaining({
+      eventType: "reply_tracking.recorded",
+      summary: "Operator recorded Reply Tracking for Prospect Business prospect-1.",
+      metadata: {
+        prospectBusinessId: "prospect-1",
+        prospectStatus: "replied",
+      },
+    }));
+  });
+
+  it("lets the operator manually record Work Conversion and move status to work_won", async () => {
+    const configuration = loadRuntimeConfiguration(baseConfiguration);
+    const auditTrail = createAuditTrailStub();
+    const workConversion = {
+      prospectBusinessId: "prospect-1",
+      conversionStatus: "work_won" as const,
+      estimatedValueCents: 250000,
+      notes: "Owner approved a starter website package.",
+      recordedBy: "operator",
+      recordedAt: new Date("2026-06-22T22:45:00.000Z"),
+    };
+    const prospectRegistry = {
+      createDiscoveryRun: vi.fn(),
+      recordDiscoveredProspect: vi.fn(),
+      completeDiscoveryRun: vi.fn(),
+      failDiscoveryRun: vi.fn(),
+      getDiscoveryRunDetail: vi.fn(),
+      listDiscoveryRuns: vi.fn(async () => []),
+      getProspectBusinessDetail: vi.fn(),
+      recordManualWorkConversion: vi.fn(async () => ({
+        id: "prospect-1",
+        googlePlaceId: "places/detail-cafe",
+        name: "Detail Cafe",
+        categories: ["cafe"],
+        prospectStatus: "work_won" as const,
+        sourceData: { placeId: "places/detail-cafe" },
+        firstSeenAt: new Date("2026-06-20T10:00:00.000Z"),
+        lastSeenAt: new Date("2026-06-21T11:00:00.000Z"),
+        firstDiscoveredRun: discoveryRunStub("run-1"),
+        latestDiscoveredRun: discoveryRunStub("run-1"),
+        appearanceHistory: [],
+        workConversion,
+      })),
+    };
+
+    const app = createReviewDashboardApp({ auditTrail, configuration, prospectRegistry });
+    const operator = request.agent(app);
+
+    await operator
+      .post("/login")
+      .type("form")
+      .send({ username: "operator", password: baseConfiguration.OPERATOR_PASSWORD })
+      .expect(302);
+
+    const response = await operator
+      .post("/api/prospect-businesses/prospect-1/work-conversion")
+      .send({
+        conversionStatus: "work_won",
+        estimatedValueCents: 250000,
+        notes: "Owner approved a starter website package.",
+      })
+      .expect(200);
+
+    expect(prospectRegistry.recordManualWorkConversion).toHaveBeenCalledWith({
+      prospectBusinessId: "prospect-1",
+      conversionStatus: "work_won",
+      estimatedValueCents: 250000,
+      notes: "Owner approved a starter website package.",
+      actor: "operator",
+    });
+    expect(response.body.prospectBusiness).toMatchObject({
+      prospectStatus: "work_won",
+      workConversion: {
+        conversionStatus: "work_won",
+        estimatedValueCents: 250000,
+        notes: "Owner approved a starter website package.",
+        recordedBy: "operator",
+      },
+    });
+    expect(auditTrail.record).toHaveBeenCalledWith(expect.objectContaining({
+      eventType: "work_conversion.recorded",
+      summary: "Operator recorded Work Conversion for Prospect Business prospect-1.",
+      metadata: {
+        prospectBusinessId: "prospect-1",
+        prospectStatus: "work_won",
+        conversionStatus: "work_won",
+      },
+    }));
+  });
+
+  it("renders Prospect Detail controls for manual Reply Tracking and Work Conversion", async () => {
+    const configuration = loadRuntimeConfiguration(baseConfiguration);
+    const auditTrail = createAuditTrailStub();
+    const app = createReviewDashboardApp({ auditTrail, configuration });
+    const operator = request.agent(app);
+
+    await operator
+      .post("/login")
+      .type("form")
+      .send({ username: "operator", password: baseConfiguration.OPERATOR_PASSWORD })
+      .expect(302);
+
+    const dashboard = await operator.get("/dashboard").expect(200);
+
+    expect(dashboard.text).toContain("Reply Tracking");
+    expect(dashboard.text).toContain("data-reply-tracking-form");
+    expect(dashboard.text).toContain("Reply timestamp");
+    expect(dashboard.text).toContain("Reply summary");
+    expect(dashboard.text).toContain("Work Conversion");
+    expect(dashboard.text).toContain("data-work-conversion-form");
+    expect(dashboard.text).toContain("Conversion status");
+    expect(dashboard.text).toContain("Estimated value (cents)");
+  });
+
   it("lets the operator override Preview Eligibility with a reason", async () => {
     const configuration = loadRuntimeConfiguration(baseConfiguration);
     const auditTrail = createAuditTrailStub();

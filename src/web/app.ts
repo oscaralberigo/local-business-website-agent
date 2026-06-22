@@ -13,7 +13,13 @@ import type {
 } from "../contact-finder/types.js";
 import { runDiscovery } from "../discovery/run-discovery.js";
 import { startDiscoveryRunSchema } from "../discovery/start-discovery-run-schema.js";
-import type { BusinessDiscoverySource, ProspectRegistry, WorkflowStateStore } from "../discovery/types.js";
+import type {
+  BusinessDiscoverySource,
+  ManualTrackingStore,
+  ProspectRegistry,
+  WorkflowStateStore,
+  WorkConversionStatus,
+} from "../discovery/types.js";
 import {
   draftOutreachForProspect,
   evaluateOutreachCompliance,
@@ -65,6 +71,7 @@ export type ReviewDashboardDependencies = {
         OutreachEmailStore &
         OutreachSuppressionStore &
         OutreachWorkflowFailureStore &
+        ManualTrackingStore &
         WorkflowStateStore
     >;
   outreachDrafterAgent?: OutreachDrafterAgent;
@@ -198,6 +205,90 @@ export function createReviewDashboardApp({
       prospectBusiness: await prospectRegistry.getProspectBusinessDetail(request.params.id),
     });
   });
+
+  app.post(
+    "/api/prospect-businesses/:id/reply-tracking",
+    requireOperator(configuration),
+    async (request, response) => {
+      if (!prospectRegistry?.recordManualReply) {
+        response.status(503).json({ error: "Reply Tracking is not configured." });
+        return;
+      }
+
+      const repliedAt = dateFromBody(request.body.repliedAt);
+      const summary = optionalStringFromBody(request.body.summary);
+      const notes = optionalStringFromBody(request.body.notes);
+      if (!repliedAt || !summary) {
+        response.status(400).json({ error: "repliedAt and summary are required." });
+        return;
+      }
+
+      const prospectBusiness = await prospectRegistry.recordManualReply({
+        prospectBusinessId: request.params.id,
+        repliedAt,
+        summary,
+        notes,
+        actor: configuration.operatorUsername,
+      });
+      await auditTrail.record({
+        actor: configuration.operatorUsername,
+        eventType: "reply_tracking.recorded",
+        summary: `Operator recorded Reply Tracking for Prospect Business ${request.params.id}.`,
+        metadata: {
+          prospectBusinessId: request.params.id,
+          prospectStatus: prospectBusiness.prospectStatus,
+        },
+      });
+
+      response.status(200).json({ prospectBusiness });
+    },
+  );
+
+  app.post(
+    "/api/prospect-businesses/:id/work-conversion",
+    requireOperator(configuration),
+    async (request, response) => {
+      if (!prospectRegistry?.recordManualWorkConversion) {
+        response.status(503).json({ error: "Work Conversion is not configured." });
+        return;
+      }
+
+      const conversionStatus = workConversionStatusFromBody(request.body.conversionStatus);
+      const estimatedValueCents = optionalIntegerFromBody(request.body.estimatedValueCents);
+      const notes = optionalStringFromBody(request.body.notes);
+      if (!conversionStatus) {
+        response.status(400).json({ error: "conversionStatus is required." });
+        return;
+      }
+      if (
+        request.body.estimatedValueCents !== undefined &&
+        (estimatedValueCents === undefined || estimatedValueCents < 0)
+      ) {
+        response.status(400).json({ error: "estimatedValueCents must be a non-negative integer." });
+        return;
+      }
+
+      const prospectBusiness = await prospectRegistry.recordManualWorkConversion({
+        prospectBusinessId: request.params.id,
+        conversionStatus,
+        estimatedValueCents,
+        notes,
+        actor: configuration.operatorUsername,
+      });
+      await auditTrail.record({
+        actor: configuration.operatorUsername,
+        eventType: "work_conversion.recorded",
+        summary: `Operator recorded Work Conversion for Prospect Business ${request.params.id}.`,
+        metadata: {
+          prospectBusinessId: request.params.id,
+          prospectStatus: prospectBusiness.prospectStatus,
+          conversionStatus,
+        },
+      });
+
+      response.status(200).json({ prospectBusiness });
+    },
+  );
 
   app.post("/api/workflow-failures/:id/retry", requireOperator(configuration), async (request, response) => {
     if (!prospectRegistry?.retryWorkflowFailure) {
@@ -775,6 +866,27 @@ function websiteAssessmentInputFromBody(body: unknown): WebsiteAssessmentInput {
 
 function optionalStringFromBody(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function optionalIntegerFromBody(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isInteger(value) ? value : undefined;
+}
+
+function dateFromBody(value: unknown): Date | undefined {
+  if (typeof value !== "string" || value.length === 0) {
+    return undefined;
+  }
+
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? undefined : date;
+}
+
+function workConversionStatusFromBody(value: unknown): WorkConversionStatus | undefined {
+  if (value === "serious_opportunity" || value === "work_won" || value === "work_lost") {
+    return value;
+  }
+
+  return undefined;
 }
 
 function reviewPolicyFromBody(body: unknown): ReviewPolicy | undefined {

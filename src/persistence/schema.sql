@@ -296,3 +296,42 @@ create unique index if not exists outreach_suppressions_latest_per_email
 
 create index if not exists outreach_suppressions_by_prospect
   on outreach_suppressions (prospect_business_id, created_at asc);
+
+create table if not exists reply_tracking (
+  prospect_business_id uuid primary key references prospect_businesses(id) on delete cascade,
+  replied_at timestamptz not null,
+  summary text not null,
+  notes text,
+  recorded_by text not null,
+  recorded_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists work_conversions (
+  prospect_business_id uuid primary key references prospect_businesses(id) on delete cascade,
+  conversion_status text not null check (
+    conversion_status in ('serious_opportunity', 'work_won', 'work_lost')
+  ),
+  estimated_value_cents integer check (estimated_value_cents >= 0),
+  notes text,
+  recorded_by text not null,
+  recorded_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists follow_up_outreach_metadata (
+  prospect_business_id uuid primary key references prospect_businesses(id) on delete cascade,
+  follow_up_status text not null check (
+    follow_up_status in (
+      'not_planned',
+      'manual_follow_up_needed',
+      'manual_follow_up_completed',
+      'do_not_follow_up'
+    )
+  ),
+  next_follow_up_at timestamptz,
+  notes text,
+  recorded_by text not null,
+  recorded_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);

@@ -418,6 +418,70 @@ export function renderDashboardPage(input: {
               <p class="empty-state">No Draft Outreach prepared yet.</p>
             </section>
           \`;
+          const replyTracking = prospectBusiness.replyTracking;
+          const replyTrackingMarkup = \`
+            <section class="reply-tracking" aria-label="Reply Tracking">
+              <div class="detail-section-heading">
+                <h3>Reply Tracking</h3>
+                \${replyTracking ? \`<span class="run-status">replied</span>\` : ""}
+              </div>
+              <dl class="prospect-summary">
+                <div><dt>Reply timestamp</dt><dd>\${clientEscapeHtml(replyTracking?.repliedAt || "")}</dd></div>
+                <div><dt>Reply summary</dt><dd>\${clientEscapeHtml(replyTracking?.summary || "")}</dd></div>
+                <div><dt>Reply notes</dt><dd>\${clientEscapeHtml(replyTracking?.notes || "")}</dd></div>
+              </dl>
+              <form class="operator-edit-form" data-reply-tracking-form data-prospect-id="\${clientEscapeHtml(prospectBusiness.id)}">
+                <label>
+                  <span>Reply timestamp</span>
+                  <input name="repliedAt" type="datetime-local" required />
+                </label>
+                <label>
+                  <span>Reply summary</span>
+                  <input name="summary" value="\${clientEscapeHtml(replyTracking?.summary || "")}" required />
+                </label>
+                <label>
+                  <span>Reply notes</span>
+                  <textarea name="notes">\${clientEscapeHtml(replyTracking?.notes || "")}</textarea>
+                </label>
+                <button type="submit">Record Reply</button>
+                <div class="form-message" role="status"></div>
+              </form>
+            </section>
+          \`;
+          const workConversion = prospectBusiness.workConversion;
+          const workConversionMarkup = \`
+            <section class="work-conversion" aria-label="Work Conversion">
+              <div class="detail-section-heading">
+                <h3>Work Conversion</h3>
+                \${workConversion ? \`<span class="run-status">\${clientEscapeHtml(workConversion.conversionStatus)}</span>\` : ""}
+              </div>
+              <dl class="prospect-summary">
+                <div><dt>Conversion status</dt><dd>\${clientEscapeHtml(workConversion?.conversionStatus || "")}</dd></div>
+                <div><dt>Estimated value (cents)</dt><dd>\${clientEscapeHtml(workConversion?.estimatedValueCents || "")}</dd></div>
+                <div><dt>Conversion notes</dt><dd>\${clientEscapeHtml(workConversion?.notes || "")}</dd></div>
+              </dl>
+              <form class="operator-edit-form" data-work-conversion-form data-prospect-id="\${clientEscapeHtml(prospectBusiness.id)}">
+                <label>
+                  <span>Conversion status</span>
+                  <select name="conversionStatus" required>
+                    <option value="serious_opportunity"\${workConversion?.conversionStatus === "serious_opportunity" ? " selected" : ""}>Serious opportunity</option>
+                    <option value="work_won"\${workConversion?.conversionStatus === "work_won" ? " selected" : ""}>Work won</option>
+                    <option value="work_lost"\${workConversion?.conversionStatus === "work_lost" ? " selected" : ""}>Work lost</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Estimated value (cents)</span>
+                  <input name="estimatedValueCents" type="number" min="0" step="1" value="\${clientEscapeHtml(workConversion?.estimatedValueCents || "")}" />
+                </label>
+                <label>
+                  <span>Conversion notes</span>
+                  <textarea name="notes">\${clientEscapeHtml(workConversion?.notes || "")}</textarea>
+                </label>
+                <button type="submit">Record Conversion</button>
+                <div class="form-message" role="status"></div>
+              </form>
+            </section>
+          \`;
 
           return \`
             <section class="prospect-detail" aria-label="Prospect Business detail">
@@ -427,6 +491,8 @@ export function renderDashboardPage(input: {
                 <div><dt>Latest discovered</dt><dd>\${clientEscapeHtml(prospectBusiness.latestDiscoveredRun.searchTerm)} in \${clientEscapeHtml(prospectBusiness.latestDiscoveredRun.searchLocation.label)}</dd></div>
               </dl>
               <ol class="appearance-history">\${history}</ol>
+              \${replyTrackingMarkup}
+              \${workConversionMarkup}
               \${workflowFailureMarkup}
               \${assessmentMarkup}
               \${previewMarkup}
@@ -761,6 +827,102 @@ export function renderDashboardPage(input: {
           } catch (error) {
             if (message) {
               message.textContent = error instanceof Error ? error.message : "Outreach Email sending failed";
+            }
+          } finally {
+            if (submit instanceof HTMLButtonElement) {
+              submit.disabled = false;
+            }
+          }
+        });
+
+        discoveryRuns.addEventListener("submit", async (event) => {
+          const form = event.target instanceof Element ? event.target.closest("[data-reply-tracking-form]") : null;
+          if (!(form instanceof HTMLFormElement)) {
+            return;
+          }
+
+          event.preventDefault();
+          const submit = form.querySelector("button");
+          const message = form.querySelector(".form-message");
+          if (submit instanceof HTMLButtonElement) {
+            submit.disabled = true;
+          }
+          if (message) {
+            message.textContent = "Recording Reply Tracking...";
+          }
+
+          const formData = new FormData(form);
+          const repliedAt = String(formData.get("repliedAt") || "");
+          const body = {
+            repliedAt: repliedAt ? new Date(repliedAt).toISOString() : "",
+            summary: String(formData.get("summary") || ""),
+            notes: String(formData.get("notes") || ""),
+          };
+
+          try {
+            const response = await fetch(\`/api/prospect-businesses/\${encodeURIComponent(form.dataset.prospectId || "")}/reply-tracking\`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(body),
+            });
+            const payload = await response.json();
+            if (!response.ok) {
+              throw new Error(payload.error || "Reply Tracking update failed");
+            }
+            if (message) {
+              message.textContent = "Reply Tracking recorded.";
+            }
+          } catch (error) {
+            if (message) {
+              message.textContent = error instanceof Error ? error.message : "Reply Tracking update failed";
+            }
+          } finally {
+            if (submit instanceof HTMLButtonElement) {
+              submit.disabled = false;
+            }
+          }
+        });
+
+        discoveryRuns.addEventListener("submit", async (event) => {
+          const form = event.target instanceof Element ? event.target.closest("[data-work-conversion-form]") : null;
+          if (!(form instanceof HTMLFormElement)) {
+            return;
+          }
+
+          event.preventDefault();
+          const submit = form.querySelector("button");
+          const message = form.querySelector(".form-message");
+          if (submit instanceof HTMLButtonElement) {
+            submit.disabled = true;
+          }
+          if (message) {
+            message.textContent = "Recording Work Conversion...";
+          }
+
+          const formData = new FormData(form);
+          const estimatedValue = String(formData.get("estimatedValueCents") || "");
+          const body = {
+            conversionStatus: String(formData.get("conversionStatus") || ""),
+            estimatedValueCents: estimatedValue ? Number(estimatedValue) : undefined,
+            notes: String(formData.get("notes") || ""),
+          };
+
+          try {
+            const response = await fetch(\`/api/prospect-businesses/\${encodeURIComponent(form.dataset.prospectId || "")}/work-conversion\`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(body),
+            });
+            const payload = await response.json();
+            if (!response.ok) {
+              throw new Error(payload.error || "Work Conversion update failed");
+            }
+            if (message) {
+              message.textContent = "Work Conversion recorded.";
+            }
+          } catch (error) {
+            if (message) {
+              message.textContent = error instanceof Error ? error.message : "Work Conversion update failed";
             }
           } finally {
             if (submit instanceof HTMLButtonElement) {
@@ -1170,7 +1332,9 @@ function renderPage(input: { title: string; body: string }): string {
         gap: 12px;
       }
 
-      .website-assessment {
+      .website-assessment,
+      .reply-tracking,
+      .work-conversion {
         display: grid;
         gap: 10px;
         border-top: 1px solid #e0e5eb;
