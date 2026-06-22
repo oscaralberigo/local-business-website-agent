@@ -166,3 +166,27 @@ create table if not exists website_assessments (
 
 create unique index if not exists website_assessments_latest_per_prospect
   on website_assessments (prospect_business_id);
+
+create table if not exists contact_evidence (
+  id uuid primary key,
+  prospect_business_id uuid not null references prospect_businesses(id) on delete cascade,
+  email_address text not null,
+  source_url text not null,
+  source_type text not null check (
+    source_type in ('business_website', 'google_places', 'official_profile', 'official_search_result')
+  ),
+  confidence double precision not null check (confidence >= 0 and confidence <= 1),
+  role_classification text not null check (role_classification in ('role', 'personal', 'unknown')),
+  outreach_approval_status text not null check (
+    outreach_approval_status in ('pending_operator_approval', 'approved', 'blocked')
+  ),
+  reason text not null,
+  found_at timestamptz not null default now(),
+  approved_at timestamptz,
+  approved_by text,
+  approval_reason text,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists contact_evidence_by_prospect
+  on contact_evidence (prospect_business_id, found_at asc);

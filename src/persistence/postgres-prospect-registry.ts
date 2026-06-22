@@ -11,6 +11,13 @@ import type {
   ResearchMode,
   SupportedClaim,
 } from "../business-context/types.js";
+import { classifyContactApprovalStatus, shouldPersistContactCandidate } from "../contact-finder/contact-suitability.js";
+import type {
+  ContactCandidate,
+  ContactEvidence,
+  ContactEvidenceSourceType,
+  ContactEvidenceStore,
+} from "../contact-finder/types.js";
 import type {
   DiscoveryAppearance,
   DiscoveryRun,
@@ -39,7 +46,7 @@ import type {
 type Queryable = Pool | PoolClient;
 
 export class PostgresProspectRegistry
-  implements ProspectRegistry, BusinessContextStore, WebsiteAssessmentStore
+  implements ProspectRegistry, BusinessContextStore, WebsiteAssessmentStore, ContactEvidenceStore
 {
   constructor(private readonly pool: Pool) {}
 
@@ -247,8 +254,236 @@ export class PostgresProspectRegistry
       latestDiscoveredRun: appearanceHistory[appearanceHistory.length - 1]!.discoveryRun,
       appearanceHistory,
       businessContext: await this.getBusinessContext(prospectBusinessId),
+      contactEvidence: await this.getContactEvidence(prospectBusinessId),
       websiteAssessment: await this.getWebsiteAssessment(prospectBusinessId),
     };
+  }
+
+  async saveContactEvidence(input: {
+    prospectBusinessId: string;
+    candidates: ContactCandidate[];
+    foundAt?: Date;
+  }): Promise<ContactEvidence[]> {
+    const foundAt = input.foundAt ?? new Date();
+    const contactEvidence: ContactEvidence[] = input.candidates
+      .filter(shouldPersistContactCandidate)
+      .map((candidate) => ({
+        id: randomUUID(),
+        prospectBusinessId: input.prospectBusinessId,
+        emailAddress: candidate.emailAddress,
+        sourceUrl: candidate.sourceUrl,
+        sourceType: candidate.sourceType,
+        confidence: candidate.confidence,
+        roleClassification: candidate.roleClassification,
+        outreachApprovalStatus: classifyContactApprovalStatus(candidate),
+        reason: candidate.reason,
+        foundAt,
+      }));
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      await client.query(
+        `delete from contact_evidence
+         where prospect_business_id = $1
+           and outreach_approval_status != 'approved'`,
+        [input.prospectBusinessId],
+      );
+
+      for (const evidence of contactEvidence) {
+        await client.query(
+          `insert into contact_evidence
+            (
+              id,
+              prospect_business_id,
+              email_address,
+              source_url,
+              source_type,
+              confidence,
+              role_classification,
+              outreach_approval_status,
+              reason,
+              found_at,
+              approved_at,
+              approved_by,
+              approval_reason
+            )
+           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+          [
+            evidence.id,
+            evidence.prospectBusinessId,
+            evidence.emailAddress,
+            evidence.sourceUrl,
+            evidence.sourceType,
+            evidence.confidence,
+            evidence.roleClassification,
+            evidence.outreachApprovalStatus,
+            evidence.reason,
+            evidence.foundAt,
+            evidence.approvedAt,
+            evidence.approvedBy,
+            evidence.approvalReason,
+          ],
+        );
+      }
+
+      const approvedResult = await client.query(
+        `select count(*)::int as count
+         from contact_evidence
+         where prospect_business_id = $1
+           and outreach_approval_status = 'approved'`,
+        [input.prospectBusinessId],
+      );
+      const prospectStatus = deriveProspectStatusFromContactEvidence({
+        hasApprovedContact: approvedResult.rows[0]?.count > 0,
+        hasPendingContact: contactEvidence.some(
+          (evidence) => evidence.outreachApprovalStatus === "pending_operator_approval",
+        ),
+      });
+
+      await client.query(
+        `update prospect_businesses
+         set prospect_status = $2,
+             updated_at = now()
+         where id = $1`,
+        [input.prospectBusinessId, prospectStatus],
+      );
+      await client.query("commit");
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+
+    return contactEvidence;
+  }
+
+  async approveContactEvidence(input: {
+    prospectBusinessId: string;
+    contactEvidenceId: string;
+    actor: string;
+    reason: string;
+    approvedAt?: Date;
+  }): Promise<ContactEvidence> {
+    const approvedAt = input.approvedAt ?? new Date();
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const result = await client.query(
+        `update contact_evidence
+         set outreach_approval_status = 'approved',
+             approved_at = $3,
+             approved_by = $4,
+             approval_reason = $5
+         where id = $1
+           and prospect_business_id = $2
+           and outreach_approval_status != 'blocked'
+         returning *`,
+        [
+          input.contactEvidenceId,
+          input.prospectBusinessId,
+          approvedAt,
+          input.actor,
+          input.reason,
+        ],
+      );
+      const row = result.rows[0];
+      if (!row) {
+        throw new Error(`Contact Evidence not found or blocked: ${input.contactEvidenceId}`);
+      }
+
+      await client.query(
+        `update prospect_businesses
+         set prospect_status = 'drafting_outreach',
+             updated_at = now()
+         where id = $1`,
+        [input.prospectBusinessId],
+      );
+      await client.query("commit");
+      return mapContactEvidenceRow(row);
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async addVerifiedContactEvidence(input: {
+    prospectBusinessId: string;
+    emailAddress: string;
+    sourceUrl: string;
+    sourceType: ContactEvidenceSourceType;
+    reason: string;
+    actor: string;
+    approvedAt?: Date;
+  }): Promise<ContactEvidence> {
+    const approvedAt = input.approvedAt ?? new Date();
+    const evidence: ContactEvidence = {
+      id: randomUUID(),
+      prospectBusinessId: input.prospectBusinessId,
+      emailAddress: input.emailAddress,
+      sourceUrl: input.sourceUrl,
+      sourceType: input.sourceType,
+      confidence: 1,
+      roleClassification: "role",
+      outreachApprovalStatus: "approved",
+      reason: input.reason,
+      foundAt: approvedAt,
+      approvedAt,
+      approvedBy: input.actor,
+      approvalReason: input.reason,
+    };
+
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      await client.query(
+        `insert into contact_evidence
+          (
+            id,
+            prospect_business_id,
+            email_address,
+            source_url,
+            source_type,
+            confidence,
+            role_classification,
+            outreach_approval_status,
+            reason,
+            found_at,
+            approved_at,
+            approved_by,
+            approval_reason
+          )
+         values ($1, $2, $3, $4, $5, $6, $7, 'approved', $8, $9, $9, $10, $8)`,
+        [
+          evidence.id,
+          evidence.prospectBusinessId,
+          evidence.emailAddress,
+          evidence.sourceUrl,
+          evidence.sourceType,
+          evidence.confidence,
+          evidence.roleClassification,
+          evidence.reason,
+          approvedAt,
+          input.actor,
+        ],
+      );
+      await client.query(
+        `update prospect_businesses
+         set prospect_status = 'drafting_outreach',
+             updated_at = now()
+         where id = $1`,
+        [input.prospectBusinessId],
+      );
+      await client.query("commit");
+      return evidence;
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async saveWebsiteAssessment(input: SaveWebsiteAssessmentInput): Promise<WebsiteAssessment> {
@@ -624,6 +859,17 @@ export class PostgresProspectRegistry
     };
   }
 
+  private async getContactEvidence(prospectBusinessId: string): Promise<ContactEvidence[]> {
+    const result = await this.pool.query(
+      `select *
+       from contact_evidence
+       where prospect_business_id = $1
+       order by found_at asc, created_at asc`,
+      [prospectBusinessId],
+    );
+    return result.rows.map(mapContactEvidenceRow);
+  }
+
   private async upsertProspectBusiness(
     client: Queryable,
     place: GooglePlaceResult,
@@ -764,6 +1010,38 @@ function mapWebsiteAssessmentRow(row: {
     reviewNotes: parseJsonb<string[]>(row.review_notes),
     previewEligibility: deserializePreviewEligibility(previewEligibility),
     assessedAt: row.assessed_at,
+  };
+}
+
+function mapContactEvidenceRow(row: {
+  id: string;
+  prospect_business_id: string;
+  email_address: string;
+  source_url: string;
+  source_type: ContactEvidenceSourceType;
+  confidence: number;
+  role_classification: ContactEvidence["roleClassification"];
+  outreach_approval_status: ContactEvidence["outreachApprovalStatus"];
+  reason: string;
+  found_at: Date;
+  approved_at?: Date;
+  approved_by?: string;
+  approval_reason?: string;
+}): ContactEvidence {
+  return {
+    id: row.id,
+    prospectBusinessId: row.prospect_business_id,
+    emailAddress: row.email_address,
+    sourceUrl: row.source_url,
+    sourceType: row.source_type,
+    confidence: row.confidence,
+    roleClassification: row.role_classification,
+    outreachApprovalStatus: row.outreach_approval_status,
+    reason: row.reason,
+    foundAt: row.found_at,
+    approvedAt: row.approved_at,
+    approvedBy: row.approved_by,
+    approvalReason: row.approval_reason,
   };
 }
 
@@ -964,4 +1242,19 @@ function mapSupportedClaimRow(row: {
     evidence: Array.isArray(row.evidence) ? row.evidence : [row.evidence],
     allowedForGeneration: row.allowed_for_generation,
   };
+}
+
+function deriveProspectStatusFromContactEvidence(input: {
+  hasApprovedContact: boolean;
+  hasPendingContact: boolean;
+}): ProspectStatus {
+  if (input.hasApprovedContact) {
+    return "drafting_outreach";
+  }
+
+  if (input.hasPendingContact) {
+    return "finding_contact";
+  }
+
+  return "contact_unavailable";
 }
