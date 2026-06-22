@@ -1,5 +1,5 @@
 import type { AuditEvent, ConnectivityStatus } from "../audit/auditTrail.js";
-import type { ConfigReadoutItem } from "../config/runtimeConfiguration.js";
+import type { ConfigReadoutItem, ReviewPolicy } from "../config/runtimeConfiguration.js";
 
 export function renderLoginPage(error?: string): string {
   return renderPage({
@@ -30,6 +30,7 @@ export function renderDashboardPage(input: {
   auditEvents: AuditEvent[];
   configReadout: ConfigReadoutItem[];
   database: ConnectivityStatus;
+  reviewPolicy: ReviewPolicy;
 }): string {
   return renderPage({
     title: "Review Dashboard",
@@ -60,6 +61,29 @@ export function renderDashboardPage(input: {
               )
               .join("")}
           </dl>
+          <form id="review-policy-form" class="review-policy-form">
+            <h3 id="review-policy-title">Review Policy</h3>
+            <label class="toggle-row" for="require-review-before-preview-publication">
+              <input
+                id="require-review-before-preview-publication"
+                name="require-review-before-preview-publication"
+                type="checkbox"
+                ${input.reviewPolicy.requireReviewBeforePreviewPublication ? "checked" : ""}
+              />
+              <span>Require review before preview publication</span>
+            </label>
+            <label class="toggle-row" for="require-review-before-outreach-sending">
+              <input
+                id="require-review-before-outreach-sending"
+                name="require-review-before-outreach-sending"
+                type="checkbox"
+                ${input.reviewPolicy.requireReviewBeforeOutreachSending ? "checked" : ""}
+              />
+              <span>Require review before outreach sending</span>
+            </label>
+            <button type="submit">Save Review Policy</button>
+            <div id="review-policy-message" class="form-message" role="status"></div>
+          </form>
         </section>
         <section class="panel" aria-labelledby="audit-title">
           <div class="section-heading audit-heading">
@@ -120,6 +144,12 @@ export function renderDashboardPage(input: {
         const discoveryForm = document.querySelector("#discovery-form");
         const discoveryRuns = document.querySelector("#discovery-runs");
         const discoveryMessage = document.querySelector("#discovery-message");
+        const reviewPolicyForm = document.querySelector("#review-policy-form");
+        const reviewPolicyMessage = document.querySelector("#review-policy-message");
+        const reviewPolicy = {
+          requireReviewBeforePreviewPublication: ${JSON.stringify(input.reviewPolicy.requireReviewBeforePreviewPublication)},
+          requireReviewBeforeOutreachSending: ${JSON.stringify(input.reviewPolicy.requireReviewBeforeOutreachSending)},
+        };
 
         function optionalNumber(formData, name) {
           const value = formData.get(name);
@@ -286,7 +316,7 @@ export function renderDashboardPage(input: {
                 <form class="preview-publication-form" data-preview-publication-form data-prospect-id="\${clientEscapeHtml(prospectBusiness.id)}">
                   <label>
                     <span>Preview Approval reason</span>
-                    <textarea name="approvalReason" required></textarea>
+                    <textarea name="approvalReason"\${reviewPolicy.requireReviewBeforePreviewPublication ? " required" : ""}></textarea>
                   </label>
                   <button type="submit">Publish Preview</button>
                   <div class="form-message" role="status"></div>
@@ -364,7 +394,7 @@ export function renderDashboardPage(input: {
                 </label>
                 <label>
                   <span>Outreach Approval reason</span>
-                  <textarea name="approvalReason" required></textarea>
+                  <textarea name="approvalReason"\${reviewPolicy.requireReviewBeforeOutreachSending ? " required" : ""}></textarea>
                 </label>
                 <button type="submit">Send Outreach</button>
                 <div class="form-message" role="status"></div>
@@ -396,6 +426,48 @@ export function renderDashboardPage(input: {
             </section>
           \`;
         }
+
+        reviewPolicyForm?.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const submit = reviewPolicyForm.querySelector("button");
+          if (submit instanceof HTMLButtonElement) {
+            submit.disabled = true;
+          }
+          if (reviewPolicyMessage) {
+            reviewPolicyMessage.textContent = "Saving Review Policy...";
+          }
+
+          const formData = new FormData(reviewPolicyForm);
+          const body = {
+            requireReviewBeforePreviewPublication: formData.has("require-review-before-preview-publication"),
+            requireReviewBeforeOutreachSending: formData.has("require-review-before-outreach-sending"),
+          };
+
+          try {
+            const response = await fetch("/api/review-policy", {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(body),
+            });
+            const payload = await response.json();
+            if (!response.ok) {
+              throw new Error(payload.error || "Review Policy update failed");
+            }
+            reviewPolicy.requireReviewBeforePreviewPublication = payload.reviewPolicy.requireReviewBeforePreviewPublication;
+            reviewPolicy.requireReviewBeforeOutreachSending = payload.reviewPolicy.requireReviewBeforeOutreachSending;
+            if (reviewPolicyMessage) {
+              reviewPolicyMessage.textContent = "Review Policy saved.";
+            }
+          } catch (error) {
+            if (reviewPolicyMessage) {
+              reviewPolicyMessage.textContent = error instanceof Error ? error.message : "Review Policy update failed";
+            }
+          } finally {
+            if (submit instanceof HTMLButtonElement) {
+              submit.disabled = false;
+            }
+          }
+        });
 
         discoveryForm?.addEventListener("submit", async (event) => {
           event.preventDefault();

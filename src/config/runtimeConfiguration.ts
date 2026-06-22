@@ -73,11 +73,13 @@ export type RuntimeConfiguration = {
     openAiConfigured: boolean;
     resendConfigured: boolean;
   };
-  reviewPolicy: {
-    requireReviewBeforePreviewPublication: boolean;
-    requireReviewBeforeOutreachSending: boolean;
-  };
+  reviewPolicy: ReviewPolicy;
   discoveryLimit: number;
+};
+
+export type ReviewPolicy = {
+  requireReviewBeforePreviewPublication: boolean;
+  requireReviewBeforeOutreachSending: boolean;
 };
 
 export type ConfigReadoutItem = {
@@ -130,14 +132,6 @@ export function buildConfigReadout(configuration: RuntimeConfiguration): ConfigR
     },
     { label: "OpenAI provider", value: configuration.providers.openAiConfigured ? "Configured" : "Not configured" },
     { label: "Resend provider", value: configuration.providers.resendConfigured ? "Configured" : "Not configured" },
-    {
-      label: "Review before preview publication",
-      value: configuration.reviewPolicy.requireReviewBeforePreviewPublication ? "Required" : "Not required"
-    },
-    {
-      label: "Review before outreach sending",
-      value: configuration.reviewPolicy.requireReviewBeforeOutreachSending ? "Required" : "Not required"
-    },
     { label: "Discovery limit", value: configuration.discoveryLimit.toString() }
   ];
 }
