@@ -35,6 +35,7 @@ import type {
   OperatorEditableField,
   PreviewArtifact,
   PreviewBuildMetadata,
+  PreviewPublication,
   PreviewSourceReference,
   PreviewWebsite,
   PreviewWebsiteOperatorEdit,
@@ -792,6 +793,101 @@ export class PostgresProspectRegistry
     return mapPreviewWebsiteRow(row);
   }
 
+  async publishPreviewWebsite(input: {
+    prospectBusinessId: string;
+    actor: string;
+    approvalReason: string;
+    publication: PreviewPublication;
+  }): Promise<PreviewWebsite> {
+    const publication: PreviewPublication = {
+      ...input.publication,
+      approvedBy: input.actor,
+      approvalReason: input.approvalReason,
+    };
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const result = await client.query(
+        `update preview_websites
+         set status = 'published',
+             publication = $2,
+             updated_at = now()
+         where prospect_business_id = $1
+         returning *`,
+        [input.prospectBusinessId, JSON.stringify(publication)],
+      );
+      const row = result.rows[0];
+      if (!row) {
+        throw new Error(`Preview Website not found: ${input.prospectBusinessId}`);
+      }
+
+      await client.query(
+        `update prospect_businesses
+         set prospect_status = 'preview_published',
+             updated_at = now()
+         where id = $1`,
+        [input.prospectBusinessId],
+      );
+      await client.query("commit");
+
+      return mapPreviewWebsiteRow(row);
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async unpublishPreviewWebsite(input: {
+    prospectBusinessId: string;
+    actor: string;
+  }): Promise<PreviewWebsite> {
+    const existingPreviewWebsite = await this.getPreviewWebsite(input.prospectBusinessId);
+    if (!existingPreviewWebsite?.publication) {
+      throw new Error(`Published Preview not found: ${input.prospectBusinessId}`);
+    }
+
+    const publication: PreviewPublication = {
+      ...existingPreviewWebsite.publication,
+      unpublishedAt: new Date(),
+      unpublishedBy: input.actor,
+    };
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const result = await client.query(
+        `update preview_websites
+         set status = 'ready_for_review',
+             publication = $2,
+             updated_at = now()
+         where prospect_business_id = $1
+         returning *`,
+        [input.prospectBusinessId, JSON.stringify(publication)],
+      );
+      const row = result.rows[0];
+      if (!row) {
+        throw new Error(`Preview Website not found: ${input.prospectBusinessId}`);
+      }
+
+      await client.query(
+        `update prospect_businesses
+         set prospect_status = 'preview_ready_for_review',
+             updated_at = now()
+         where id = $1`,
+        [input.prospectBusinessId],
+      );
+      await client.query("commit");
+
+      return mapPreviewWebsiteRow(row);
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   async saveBusinessContext(input: {
     prospectBusinessId: string;
     researchMode: ResearchMode;
@@ -1204,6 +1300,7 @@ function mapPreviewWebsiteRow(row: {
   build_metadata: PreviewBuildMetadata;
   artifact: PreviewArtifact;
   operator_editable_fields: OperatorEditableField[];
+  publication?: PreviewPublication | SerializedPreviewPublication | string | null;
   created_at: Date;
   updated_at: Date;
 }): PreviewWebsite {
@@ -1218,6 +1315,9 @@ function mapPreviewWebsiteRow(row: {
     buildMetadata: parseJsonb<PreviewBuildMetadata>(row.build_metadata),
     artifact: parseJsonb<PreviewArtifact>(row.artifact),
     operatorEditableFields: parseJsonb<OperatorEditableField[]>(row.operator_editable_fields),
+    publication: deserializePreviewPublication(
+      row.publication ? parseJsonb<PreviewPublication | SerializedPreviewPublication>(row.publication) : undefined,
+    ),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -1231,6 +1331,14 @@ type SerializedPreviewEligibility = Omit<PreviewEligibility, "override"> & {
   override?: Omit<NonNullable<PreviewEligibility["override"]>, "overriddenAt"> & {
     overriddenAt: string;
   };
+};
+
+type SerializedPreviewPublication = Omit<
+  PreviewPublication,
+  "publishedAt" | "unpublishedAt"
+> & {
+  publishedAt: string;
+  unpublishedAt?: string;
 };
 
 function deserializeScreenshot(
@@ -1262,6 +1370,27 @@ function deserializePreviewEligibility(
               ? previewEligibility.override.overriddenAt
               : new Date(previewEligibility.override.overriddenAt),
         }
+      : undefined,
+  };
+}
+
+function deserializePreviewPublication(
+  publication?: PreviewPublication | SerializedPreviewPublication,
+): PreviewPublication | undefined {
+  if (!publication) {
+    return undefined;
+  }
+
+  return {
+    ...publication,
+    publishedAt:
+      publication.publishedAt instanceof Date
+        ? publication.publishedAt
+        : new Date(publication.publishedAt),
+    unpublishedAt: publication.unpublishedAt
+      ? publication.unpublishedAt instanceof Date
+        ? publication.unpublishedAt
+        : new Date(publication.unpublishedAt)
       : undefined,
   };
 }

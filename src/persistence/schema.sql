@@ -202,9 +202,13 @@ create table if not exists preview_websites (
   build_metadata jsonb not null,
   artifact jsonb not null,
   operator_editable_fields jsonb not null,
+  publication jsonb,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
 
 create unique index if not exists preview_websites_latest_per_prospect
   on preview_websites (prospect_business_id);
+
+alter table preview_websites
+  add column if not exists publication jsonb;

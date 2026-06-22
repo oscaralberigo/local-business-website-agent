@@ -106,6 +106,19 @@ export type PreviewWebsiteOperatorEdit = {
 
 export type PreviewWebsiteStatus = "ready_for_review" | "published" | "failed";
 
+export type PreviewPublication = {
+  previewUrl: string;
+  previewUrlPath: string;
+  deploymentId: string;
+  buildId: string;
+  noindex: boolean;
+  publishedAt: Date;
+  approvedBy: string;
+  approvalReason: string;
+  unpublishedAt?: Date;
+  unpublishedBy?: string;
+};
+
 export type PreviewWebsite = {
   id: string;
   prospectBusinessId: string;
@@ -117,6 +130,7 @@ export type PreviewWebsite = {
   buildMetadata: PreviewBuildMetadata;
   artifact: PreviewArtifact;
   operatorEditableFields: OperatorEditableField[];
+  publication?: PreviewPublication;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -147,11 +161,29 @@ export type PreviewArtifactStore = {
   }): Promise<PreviewArtifact>;
 };
 
+export type PreviewHost = {
+  publish(input: {
+    previewWebsite: PreviewWebsite;
+    previewBaseUrl: string;
+  }): Promise<PreviewPublication>;
+  unpublish(input: { previewUrlPath: string }): Promise<void>;
+};
+
 export type PreviewWebsiteStore = {
   savePreviewWebsite(input: SavePreviewWebsiteInput): Promise<PreviewWebsite>;
   updatePreviewWebsiteOperatorEdits(input: {
     prospectBusinessId: string;
     actor: string;
     edits: PreviewWebsiteOperatorEdit[];
+  }): Promise<PreviewWebsite>;
+  publishPreviewWebsite(input: {
+    prospectBusinessId: string;
+    actor: string;
+    approvalReason: string;
+    publication: PreviewPublication;
+  }): Promise<PreviewWebsite>;
+  unpublishPreviewWebsite(input: {
+    prospectBusinessId: string;
+    actor: string;
   }): Promise<PreviewWebsite>;
 };

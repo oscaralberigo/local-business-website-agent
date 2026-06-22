@@ -17,11 +17,14 @@ import type { BusinessDiscoverySource, ProspectRegistry } from "../discovery/typ
 import { generatePreviewWebsite } from "../preview-generation/generate-preview-website.js";
 import type {
   PreviewArtifactStore,
+  PreviewHost,
   PreviewWebsiteOperatorEdit,
   PreviewWebsiteStore,
   WebsiteBuilderAgent,
   WebsiteDesignerAgent,
 } from "../preview-generation/types.js";
+import { publishedPreviewStaticMiddleware } from "../preview-publication/file-system-preview-host.js";
+import { evaluatePreviewPublicationCompliance } from "../preview-publication/preview-publication-compliance.js";
 import { assessWebsiteOpportunity } from "../website-assessment/assess-website-opportunity.js";
 import type {
   WebsiteAssessmentInput,
@@ -40,6 +43,7 @@ export type ReviewDashboardDependencies = {
   prospectRegistry?: ProspectRegistry &
     Partial<BusinessContextStore & WebsiteAssessmentStore & ContactEvidenceStore & PreviewWebsiteStore>;
   previewArtifactStore?: PreviewArtifactStore;
+  previewHost?: PreviewHost;
   websiteBuilderAgent?: WebsiteBuilderAgent;
   websiteDesignerAgent?: WebsiteDesignerAgent;
   websiteReviewerAgent?: WebsiteReviewerAgent;
@@ -53,6 +57,7 @@ export function createReviewDashboardApp({
   discoverySource,
   prospectRegistry,
   previewArtifactStore,
+  previewHost,
   websiteBuilderAgent,
   websiteDesignerAgent,
   websiteReviewerAgent,
@@ -62,6 +67,7 @@ export function createReviewDashboardApp({
   app.disable("x-powered-by");
   app.use(express.json({ limit: "64kb" }));
   app.use(express.urlencoded({ extended: false }));
+  app.use("/published-previews", publishedPreviewStaticMiddleware(configuration.previewArtifactRoot));
   app.use("/preview-artifacts", requireOperator(configuration), express.static(configuration.previewArtifactRoot));
 
   app.get("/", (request, response) => {
@@ -345,6 +351,89 @@ export function createReviewDashboardApp({
         prospectBusinessId: request.params.id,
         actor: configuration.operatorUsername,
         edits,
+      });
+
+      response.status(200).json({ previewWebsite });
+    },
+  );
+
+  app.post(
+    "/api/prospect-businesses/:id/preview-website/publication",
+    requireOperator(configuration),
+    async (request, response) => {
+      if (!prospectRegistry || !prospectRegistry.publishPreviewWebsite || !previewHost) {
+        response.status(503).json({ error: "Preview Website publication is not configured." });
+        return;
+      }
+
+      const approvalReason = optionalStringFromBody(request.body.approvalReason);
+      if (configuration.reviewPolicy.requireReviewBeforePreviewPublication && !approvalReason) {
+        response.status(400).json({ error: "approvalReason is required." });
+        return;
+      }
+
+      const prospectBusiness = await prospectRegistry.getProspectBusinessDetail(request.params.id);
+      const complianceDecision = evaluatePreviewPublicationCompliance(prospectBusiness);
+      if (!complianceDecision.allowed || !prospectBusiness.previewWebsite) {
+        response.status(409).json({ error: complianceDecision.reasons.join(" ") });
+        return;
+      }
+
+      const hostPublication = await previewHost.publish({
+        previewWebsite: prospectBusiness.previewWebsite,
+        previewBaseUrl: configuration.previewBaseUrl,
+      });
+      const publication = {
+        ...hostPublication,
+        approvedBy: configuration.operatorUsername,
+        approvalReason: approvalReason ?? "Review Policy did not require Human Review.",
+      };
+      if (!publication.noindex) {
+        response.status(409).json({ error: "Published Preview must be served with noindex behavior." });
+        return;
+      }
+
+      const previewWebsite = await prospectRegistry.publishPreviewWebsite({
+        prospectBusinessId: request.params.id,
+        actor: configuration.operatorUsername,
+        approvalReason: approvalReason ?? "Review Policy did not require Human Review.",
+        publication,
+      });
+      await auditTrail.record({
+        actor: configuration.operatorUsername,
+        eventType: "preview.published",
+        summary: `Published Preview Website for Prospect Business ${request.params.id}.`,
+      });
+
+      response.status(200).json({ previewWebsite });
+    },
+  );
+
+  app.delete(
+    "/api/prospect-businesses/:id/preview-website/publication",
+    requireOperator(configuration),
+    async (request, response) => {
+      if (!prospectRegistry || !prospectRegistry.unpublishPreviewWebsite || !previewHost) {
+        response.status(503).json({ error: "Preview Website unpublication is not configured." });
+        return;
+      }
+
+      const prospectBusiness = await prospectRegistry.getProspectBusinessDetail(request.params.id);
+      const publication = prospectBusiness.previewWebsite?.publication;
+      if (prospectBusiness.previewWebsite?.status !== "published" || !publication) {
+        response.status(409).json({ error: "Published Preview is required before unpublishing." });
+        return;
+      }
+
+      await previewHost.unpublish({ previewUrlPath: publication.previewUrlPath });
+      const previewWebsite = await prospectRegistry.unpublishPreviewWebsite({
+        prospectBusinessId: request.params.id,
+        actor: configuration.operatorUsername,
+      });
+      await auditTrail.record({
+        actor: configuration.operatorUsername,
+        eventType: "preview.unpublished",
+        summary: `Unpublished Preview Website for Prospect Business ${request.params.id}.`,
       });
 
       response.status(200).json({ previewWebsite });
