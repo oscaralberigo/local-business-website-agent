@@ -32,6 +32,12 @@ import type {
   WorkflowFailure,
 } from "../discovery/types.js";
 import type {
+  DraftOutreach,
+  DraftOutreachOperatorEdit,
+  DraftOutreachStore,
+  SaveDraftOutreachInput,
+} from "../outreach/types.js";
+import type {
   OperatorEditableField,
   PreviewArtifact,
   PreviewBuildMetadata,
@@ -59,7 +65,13 @@ import type {
 type Queryable = Pool | PoolClient;
 
 export class PostgresProspectRegistry
-  implements ProspectRegistry, BusinessContextStore, WebsiteAssessmentStore, ContactEvidenceStore, PreviewWebsiteStore
+  implements
+    ProspectRegistry,
+    BusinessContextStore,
+    WebsiteAssessmentStore,
+    ContactEvidenceStore,
+    PreviewWebsiteStore,
+    DraftOutreachStore
 {
   constructor(private readonly pool: Pool) {}
 
@@ -268,6 +280,7 @@ export class PostgresProspectRegistry
       appearanceHistory,
       businessContext: await this.getBusinessContext(prospectBusinessId),
       contactEvidence: await this.getContactEvidence(prospectBusinessId),
+      draftOutreach: await this.getDraftOutreach(prospectBusinessId),
       previewWebsite: await this.getPreviewWebsite(prospectBusinessId),
       websiteAssessment: await this.getWebsiteAssessment(prospectBusinessId),
     };
@@ -888,6 +901,100 @@ export class PostgresProspectRegistry
     }
   }
 
+  async saveDraftOutreach(input: SaveDraftOutreachInput): Promise<DraftOutreach> {
+    const id = randomUUID();
+    const now = new Date();
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const result = await client.query(
+        `insert into draft_outreach
+          (
+            id,
+            prospect_business_id,
+            subject,
+            body_text,
+            body_html,
+            claims_used,
+            compliance_notes,
+            requires_operator_review,
+            created_at,
+            updated_at
+          )
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)
+         on conflict (prospect_business_id) do update
+         set subject = excluded.subject,
+             body_text = excluded.body_text,
+             body_html = excluded.body_html,
+             claims_used = excluded.claims_used,
+             compliance_notes = excluded.compliance_notes,
+             requires_operator_review = excluded.requires_operator_review,
+             updated_at = excluded.updated_at
+         returning *`,
+        [
+          id,
+          input.prospectBusinessId,
+          input.subject,
+          input.bodyText,
+          input.bodyHtml,
+          JSON.stringify(input.claimsUsed),
+          JSON.stringify(input.complianceNotes),
+          input.requiresOperatorReview,
+          now,
+        ],
+      );
+
+      await client.query(
+        `update prospect_businesses
+         set prospect_status = 'outreach_ready_for_review',
+             updated_at = now()
+         where id = $1`,
+        [input.prospectBusinessId],
+      );
+      await client.query("commit");
+
+      return mapDraftOutreachRow(result.rows[0]);
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async updateDraftOutreachOperatorEdits(input: {
+    prospectBusinessId: string;
+    actor: string;
+    edits: DraftOutreachOperatorEdit;
+  }): Promise<DraftOutreach> {
+    const existingDraft = await this.getDraftOutreach(input.prospectBusinessId);
+    if (!existingDraft) {
+      throw new Error(`Draft Outreach not found: ${input.prospectBusinessId}`);
+    }
+
+    const result = await this.pool.query(
+      `update draft_outreach
+       set subject = $2,
+           body_text = $3,
+           body_html = $4,
+           updated_at = now()
+       where prospect_business_id = $1
+       returning *`,
+      [
+        input.prospectBusinessId,
+        input.edits.subject ?? existingDraft.subject,
+        input.edits.bodyText ?? existingDraft.bodyText,
+        input.edits.bodyHtml ?? existingDraft.bodyHtml,
+      ],
+    );
+    const row = result.rows[0];
+    if (!row) {
+      throw new Error(`Draft Outreach not found: ${input.prospectBusinessId}`);
+    }
+
+    return mapDraftOutreachRow(row);
+  }
+
   async saveBusinessContext(input: {
     prospectBusinessId: string;
     researchMode: ResearchMode;
@@ -1114,6 +1221,17 @@ export class PostgresProspectRegistry
     return row ? mapPreviewWebsiteRow(row) : undefined;
   }
 
+  private async getDraftOutreach(prospectBusinessId: string): Promise<DraftOutreach | undefined> {
+    const result = await this.pool.query(
+      `select *
+       from draft_outreach
+       where prospect_business_id = $1`,
+      [prospectBusinessId],
+    );
+    const row = result.rows[0];
+    return row ? mapDraftOutreachRow(row) : undefined;
+  }
+
   private async upsertProspectBusiness(
     client: Queryable,
     place: GooglePlaceResult,
@@ -1318,6 +1436,32 @@ function mapPreviewWebsiteRow(row: {
     publication: deserializePreviewPublication(
       row.publication ? parseJsonb<PreviewPublication | SerializedPreviewPublication>(row.publication) : undefined,
     ),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapDraftOutreachRow(row: {
+  id: string;
+  prospect_business_id: string;
+  subject: string;
+  body_text: string;
+  body_html: string;
+  claims_used: DraftOutreach["claimsUsed"];
+  compliance_notes: string[];
+  requires_operator_review: boolean;
+  created_at: Date;
+  updated_at: Date;
+}): DraftOutreach {
+  return {
+    id: row.id,
+    prospectBusinessId: row.prospect_business_id,
+    subject: row.subject,
+    bodyText: row.body_text,
+    bodyHtml: row.body_html,
+    claimsUsed: parseJsonb<DraftOutreach["claimsUsed"]>(row.claims_used),
+    complianceNotes: parseJsonb<string[]>(row.compliance_notes),
+    requiresOperatorReview: row.requires_operator_review,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

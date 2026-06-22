@@ -1,5 +1,6 @@
 import type { BusinessContext } from "../business-context/types.js";
 import type { ContactEvidence } from "../contact-finder/types.js";
+import type { DraftOutreach } from "../outreach/types.js";
 import type { PreviewWebsite } from "../preview-generation/types.js";
 import type { WebsiteAssessment } from "../website-assessment/types.js";
 
@@ -130,6 +131,7 @@ export type ProspectBusinessDetail = ProspectBusiness & {
   appearanceHistory: DiscoveryAppearanceDetail[];
   businessContext?: BusinessContext;
   contactEvidence?: ContactEvidence[];
+  draftOutreach?: DraftOutreach;
   previewWebsite?: PreviewWebsite;
   websiteAssessment?: WebsiteAssessment;
 };

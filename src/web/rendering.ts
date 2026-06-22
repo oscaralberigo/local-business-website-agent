@@ -288,6 +288,48 @@ export function renderDashboardPage(input: {
               <p class="empty-state">No Preview Website generated yet.</p>
             </section>
           \`;
+          const draftOutreach = prospectBusiness.draftOutreach;
+          const draftOutreachMarkup = draftOutreach ? \`
+            <section class="draft-outreach" aria-label="Draft Outreach">
+              <div class="detail-section-heading">
+                <h3>Draft Outreach</h3>
+                <span class="run-status">\${draftOutreach.requiresOperatorReview ? "Operator review required" : "Ready"}</span>
+              </div>
+              <dl class="prospect-summary">
+                <div><dt>Subject</dt><dd>\${clientEscapeHtml(draftOutreach.subject)}</dd></div>
+                <div><dt>Claims used</dt><dd>\${clientEscapeHtml(draftOutreach.claimsUsed.map((claim) => claim.claim).join("; "))}</dd></div>
+              </dl>
+              <h4>Compliance notes</h4>
+              \${draftOutreach.complianceNotes.length > 0
+                ? \`<ul class="evidence-list">\${draftOutreach.complianceNotes.map((note) => \`<li>\${clientEscapeHtml(note)}</li>\`).join("")}</ul>\`
+                : \`<p class="empty-state">No compliance notes recorded.</p>\`
+              }
+              <form class="operator-edit-form" data-outreach-edit-form data-prospect-id="\${clientEscapeHtml(prospectBusiness.id)}">
+                <h4>Operator Edits</h4>
+                <label>
+                  <span>Subject</span>
+                  <input name="subject" value="\${clientEscapeHtml(draftOutreach.subject)}" />
+                </label>
+                <label>
+                  <span>Text body</span>
+                  <textarea name="bodyText">\${clientEscapeHtml(draftOutreach.bodyText)}</textarea>
+                </label>
+                <label>
+                  <span>HTML body</span>
+                  <textarea name="bodyHtml">\${clientEscapeHtml(draftOutreach.bodyHtml)}</textarea>
+                </label>
+                <button type="submit">Save Outreach Edits</button>
+                <div class="form-message" role="status"></div>
+              </form>
+            </section>
+          \` : \`
+            <section class="draft-outreach" aria-label="Draft Outreach">
+              <div class="detail-section-heading">
+                <h3>Draft Outreach</h3>
+              </div>
+              <p class="empty-state">No Draft Outreach prepared yet.</p>
+            </section>
+          \`;
 
           return \`
             <section class="prospect-detail" aria-label="Prospect Business detail">
@@ -299,6 +341,7 @@ export function renderDashboardPage(input: {
               <ol class="appearance-history">\${history}</ol>
               \${assessmentMarkup}
               \${previewMarkup}
+              \${draftOutreachMarkup}
             </section>
           \`;
         }
@@ -491,6 +534,53 @@ export function renderDashboardPage(input: {
           } catch (error) {
             if (message) {
               message.textContent = error instanceof Error ? error.message : "Preview Website unpublication failed";
+            }
+          } finally {
+            if (submit instanceof HTMLButtonElement) {
+              submit.disabled = false;
+            }
+          }
+        });
+
+        discoveryRuns.addEventListener("submit", async (event) => {
+          const form = event.target instanceof Element ? event.target.closest("[data-outreach-edit-form]") : null;
+          if (!(form instanceof HTMLFormElement)) {
+            return;
+          }
+
+          event.preventDefault();
+          const submit = form.querySelector("button");
+          const message = form.querySelector(".form-message");
+          if (submit instanceof HTMLButtonElement) {
+            submit.disabled = true;
+          }
+          if (message) {
+            message.textContent = "Saving Draft Outreach edits...";
+          }
+
+          const formData = new FormData(form);
+          const body = {
+            subject: String(formData.get("subject") || ""),
+            bodyText: String(formData.get("bodyText") || ""),
+            bodyHtml: String(formData.get("bodyHtml") || ""),
+          };
+
+          try {
+            const response = await fetch(\`/api/prospect-businesses/\${encodeURIComponent(form.dataset.prospectId || "")}/draft-outreach/operator-edits\`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(body),
+            });
+            const payload = await response.json();
+            if (!response.ok) {
+              throw new Error(payload.error || "Draft Outreach edits failed");
+            }
+            if (message) {
+              message.textContent = "Draft Outreach edits saved.";
+            }
+          } catch (error) {
+            if (message) {
+              message.textContent = error instanceof Error ? error.message : "Draft Outreach edits failed";
             }
           } finally {
             if (submit instanceof HTMLButtonElement) {

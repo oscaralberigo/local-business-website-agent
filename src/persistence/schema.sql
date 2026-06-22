@@ -212,3 +212,19 @@ create unique index if not exists preview_websites_latest_per_prospect
 
 alter table preview_websites
   add column if not exists publication jsonb;
+
+create table if not exists draft_outreach (
+  id uuid primary key,
+  prospect_business_id uuid not null references prospect_businesses(id) on delete cascade,
+  subject text not null,
+  body_text text not null,
+  body_html text not null,
+  claims_used jsonb not null,
+  compliance_notes jsonb not null,
+  requires_operator_review boolean not null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create unique index if not exists draft_outreach_latest_per_prospect
+  on draft_outreach (prospect_business_id);
