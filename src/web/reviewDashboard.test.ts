@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { BusinessContextResearcher } from "../business-context/types.js";
 import type { ContactFinderAgent } from "../contact-finder/types.js";
 import { loadRuntimeConfiguration } from "../config/runtimeConfiguration.js";
-import type { OutreachDrafterAgent } from "../outreach/types.js";
+import type { EmailSendingProvider, OutreachDrafterAgent } from "../outreach/types.js";
 import type {
   PreviewArtifactStore,
   PreviewWebsite,
@@ -1556,6 +1556,189 @@ describe("Review Dashboard bootstrap slice", () => {
     const dashboard = await operator.get("/dashboard").expect(200);
     expect(dashboard.text).toContain("Draft Outreach");
     expect(dashboard.text).toContain("Save Outreach Edits");
+  });
+
+  it("lets the operator send approved Outreach and shows dashboard send feedback", async () => {
+    const configuration = loadRuntimeConfiguration(baseConfiguration);
+    const auditTrail = createAuditTrailStub();
+    const sentAt = new Date("2026-06-22T21:00:00.000Z");
+    const draftOutreach = {
+      id: "draft-1",
+      prospectBusinessId: "prospect-1",
+      subject: "Website preview for Detail Cafe",
+      bodyText:
+        "Hi Detail Cafe team,\nhttps://previews.example.com/published-previews/abc123/\nLogan Sinclair\n100 Main St, Beacon, NY 12508\nReply no thanks and I will not contact you again.",
+      bodyHtml:
+        "<p>Hi Detail Cafe team</p><p>https://previews.example.com/published-previews/abc123/</p><p>Logan Sinclair</p><p>100 Main St, Beacon, NY 12508</p><p>Reply no thanks and I will not contact you again.</p>",
+      claimsUsed: [
+        {
+          claim: "The current website could make contact details easier to find.",
+          source: "website_assessment.safe_claims",
+        },
+      ],
+      complianceNotes: ["Operator review is required before sending."],
+      requiresOperatorReview: true,
+      createdAt: new Date("2026-06-22T20:00:00.000Z"),
+      updatedAt: new Date("2026-06-22T20:00:00.000Z"),
+    };
+    const outreachEmail = {
+      id: "outreach-email-1",
+      prospectBusinessId: "prospect-1",
+      draftOutreachId: "draft-1",
+      recipientEmailAddress: "hello@detail.example",
+      provider: "safe_test",
+      providerMessageId: "safe-test-123",
+      sendStatus: "sent" as const,
+      suppressionStatus: "clear" as const,
+      sentAt,
+      createdAt: sentAt,
+      updatedAt: sentAt,
+    };
+    const prospectBusiness = {
+      ...prospectBusinessWithPreview({
+        ...previewWebsiteReadyForReview(),
+        status: "published" as const,
+        publication: {
+          previewUrl: "https://previews.example.com/published-previews/abc123/",
+          previewUrlPath: "/published-previews/abc123/",
+          deploymentId: "abc123",
+          buildId: "npm-run-build-previews",
+          noindex: true,
+          publishedAt: new Date("2026-06-22T19:00:00.000Z"),
+          approvedBy: "operator",
+          approvalReason: "Approved for publication.",
+        },
+      }),
+      prospectStatus: "outreach_ready_for_review" as const,
+      contactEvidence: [
+        {
+          id: "contact-1",
+          prospectBusinessId: "prospect-1",
+          emailAddress: "hello@detail.example",
+          sourceUrl: "https://detail.example/contact",
+          sourceType: "business_website" as const,
+          confidence: 0.95,
+          roleClassification: "role" as const,
+          outreachApprovalStatus: "approved" as const,
+          reason: "Published on the official contact page.",
+          foundAt: new Date("2026-06-22T18:30:00.000Z"),
+          approvedAt: new Date("2026-06-22T18:35:00.000Z"),
+          approvedBy: "operator",
+          approvalReason: "Operator verified this is the correct inbox.",
+        },
+      ],
+      websiteAssessment: {
+        id: "assessment-1",
+        prospectBusinessId: "prospect-1",
+        deterministicChecks: {
+          pageLoad: "reachable" as const,
+          https: "valid" as const,
+          mobileViewport: "rendered" as const,
+          contactInformationFound: true,
+          servicesFound: true,
+          brokenAssetsOrConsoleErrors: false,
+          thirdPartyOnlyPresence: false,
+        },
+        opportunityCategory: "outdated_or_low_quality" as const,
+        confidence: 0.77,
+        summary: "The site is reachable, but key cafe details are hard to scan on mobile.",
+        evidence: [],
+        recommendedPitchAngle: "modern_upgrade" as const,
+        safeClaims: ["The current website could make contact details easier to find."],
+        reviewNotes: [],
+        previewEligibility: {
+          eligibleByDefault: true,
+          effectiveEligible: true,
+          requiresOperatorReview: false,
+          overriddenByOperator: false,
+          reason: "This Opportunity Category is preview-eligible by default.",
+        },
+        assessedAt: new Date("2026-06-22T16:50:00.000Z"),
+      },
+      draftOutreach,
+      outreachEmails: [outreachEmail],
+      workflowFailures: [],
+    };
+    const prospectRegistry = {
+      createDiscoveryRun: vi.fn(),
+      recordDiscoveredProspect: vi.fn(),
+      completeDiscoveryRun: vi.fn(),
+      failDiscoveryRun: vi.fn(),
+      getDiscoveryRunDetail: vi.fn(),
+      listDiscoveryRuns: vi.fn(async () => [{
+        ...discoveryRunStub("run-1"),
+        appearances: [],
+        discoveredProspects: [prospectBusiness],
+        workflowFailures: [],
+      }]),
+      getProspectBusinessDetail: vi.fn(async () => prospectBusiness),
+      saveOutreachEmail: vi.fn(async () => outreachEmail),
+      getOutreachSuppressionStatus: vi.fn(async () => ({ status: "clear" as const })),
+      recordOutreachWorkflowFailure: vi.fn(async () => undefined),
+    };
+    const emailProvider: EmailSendingProvider = {
+      send: vi.fn(async () => ({
+        provider: "safe_test",
+        providerMessageId: "safe-test-123",
+        sentAt,
+      })),
+    };
+
+    const app = createReviewDashboardApp({
+      auditTrail,
+      configuration,
+      prospectRegistry,
+      emailProvider,
+    });
+    const operator = request.agent(app);
+
+    await operator
+      .post("/login")
+      .type("form")
+      .send({ username: "operator", password: baseConfiguration.OPERATOR_PASSWORD })
+      .expect(302);
+
+    const sendResponse = await operator
+      .post("/api/prospect-businesses/prospect-1/outreach-email/send")
+      .send({
+        fromEmail: "Logan Sinclair <logan@example.com>",
+        senderIdentity: "Logan Sinclair",
+        postalAddress: "100 Main St, Beacon, NY 12508",
+        optOutWording: "Reply no thanks and I will not contact you again.",
+        approvalReason: "Operator approved this Draft Outreach for sending.",
+      })
+      .expect(200);
+
+    expect(emailProvider.send).toHaveBeenCalledWith({
+      from: "Logan Sinclair <logan@example.com>",
+      to: "hello@detail.example",
+      subject: "Website preview for Detail Cafe",
+      text: draftOutreach.bodyText,
+      html: draftOutreach.bodyHtml,
+    });
+    expect(prospectRegistry.saveOutreachEmail).toHaveBeenCalledWith(expect.objectContaining({
+      prospectBusinessId: "prospect-1",
+      draftOutreachId: "draft-1",
+      provider: "safe_test",
+      providerMessageId: "safe-test-123",
+      sendStatus: "sent",
+      suppressionStatus: "clear",
+    }));
+    expect(sendResponse.body.outreachEmail).toMatchObject({
+      id: "outreach-email-1",
+      providerMessageId: "safe-test-123",
+      sendStatus: "sent",
+    });
+
+    const dashboard = await operator.get("/dashboard").expect(200);
+    expect(dashboard.text).toContain("Send Outreach");
+    const detail = await operator.get("/api/prospect-businesses/prospect-1").expect(200);
+    expect(detail.body.prospectBusiness.outreachEmails).toEqual([
+      expect.objectContaining({
+        providerMessageId: "safe-test-123",
+        sendStatus: "sent",
+      }),
+    ]);
   });
 });
 

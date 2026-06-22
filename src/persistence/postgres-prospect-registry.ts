@@ -35,7 +35,15 @@ import type {
   DraftOutreach,
   DraftOutreachOperatorEdit,
   DraftOutreachStore,
+  OutreachEmail,
+  OutreachEmailStore,
+  OutreachFailureMetadata,
+  OutreachSuppressionCheck,
+  OutreachSuppressionStatus,
+  OutreachSuppressionStore,
+  OutreachWorkflowFailureStore,
   SaveDraftOutreachInput,
+  SaveOutreachEmailInput,
 } from "../outreach/types.js";
 import type {
   OperatorEditableField,
@@ -71,7 +79,10 @@ export class PostgresProspectRegistry
     WebsiteAssessmentStore,
     ContactEvidenceStore,
     PreviewWebsiteStore,
-    DraftOutreachStore
+    DraftOutreachStore,
+    OutreachEmailStore,
+    OutreachSuppressionStore,
+    OutreachWorkflowFailureStore
 {
   constructor(private readonly pool: Pool) {}
 
@@ -204,7 +215,7 @@ export class PostgresProspectRegistry
         [discoveryRunId],
       ),
       this.pool.query(
-        `select id, discovery_run_id, failed_step, error_summary, retryable, operator_visible_status, provider
+        `select id, discovery_run_id, prospect_business_id, failed_step, error_summary, retryable, operator_visible_status, provider
          from workflow_failures
          where discovery_run_id = $1
          order by created_at asc`,
@@ -281,6 +292,8 @@ export class PostgresProspectRegistry
       businessContext: await this.getBusinessContext(prospectBusinessId),
       contactEvidence: await this.getContactEvidence(prospectBusinessId),
       draftOutreach: await this.getDraftOutreach(prospectBusinessId),
+      outreachEmails: await this.getOutreachEmails(prospectBusinessId),
+      workflowFailures: await this.getProspectWorkflowFailures(prospectBusinessId),
       previewWebsite: await this.getPreviewWebsite(prospectBusinessId),
       websiteAssessment: await this.getWebsiteAssessment(prospectBusinessId),
     };
@@ -995,6 +1008,132 @@ export class PostgresProspectRegistry
     return mapDraftOutreachRow(row);
   }
 
+  async saveOutreachEmail(input: SaveOutreachEmailInput): Promise<OutreachEmail> {
+    const id = randomUUID();
+    const now = new Date();
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const result = await client.query(
+        `insert into outreach_emails
+          (
+            id,
+            prospect_business_id,
+            draft_outreach_id,
+            recipient_email_address,
+            provider,
+            provider_message_id,
+            send_status,
+            suppression_status,
+            sent_at,
+            failure_metadata,
+            created_at,
+            updated_at
+          )
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)
+         returning *`,
+        [
+          id,
+          input.prospectBusinessId,
+          input.draftOutreachId,
+          input.recipientEmailAddress,
+          input.provider,
+          input.providerMessageId,
+          input.sendStatus,
+          input.suppressionStatus,
+          input.sentAt,
+          input.failureMetadata ? JSON.stringify(input.failureMetadata) : null,
+          now,
+        ],
+      );
+
+      if (input.sendStatus === "sent") {
+        await client.query(
+          `update prospect_businesses
+           set prospect_status = 'outreach_sent',
+               updated_at = now()
+           where id = $1`,
+          [input.prospectBusinessId],
+        );
+      }
+      await client.query("commit");
+
+      return mapOutreachEmailRow(result.rows[0]);
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async getOutreachSuppressionStatus(input: {
+    prospectBusinessId: string;
+    emailAddress: string;
+  }): Promise<OutreachSuppressionCheck> {
+    const result = await this.pool.query(
+      `select suppression_status, reason
+       from outreach_suppressions
+       where lower(email_address) = lower($1)
+          or prospect_business_id = $2
+       order by created_at desc
+       limit 1`,
+      [input.emailAddress, input.prospectBusinessId],
+    );
+    const row = result.rows[0] as
+      | { suppression_status: Exclude<OutreachSuppressionStatus, "clear">; reason: string }
+      | undefined;
+    if (!row) {
+      return { status: "clear" };
+    }
+
+    return {
+      status: row.suppression_status,
+      reason: row.reason,
+    };
+  }
+
+  async recordOutreachSuppression(input: {
+    prospectBusinessId?: string;
+    emailAddress: string;
+    status: Exclude<OutreachSuppressionStatus, "clear">;
+    reason: string;
+  }): Promise<void> {
+    await this.pool.query(
+      `insert into outreach_suppressions
+        (id, prospect_business_id, email_address, suppression_status, reason)
+       values ($1, $2, $3, $4, $5)
+       on conflict (email_address) do update
+       set prospect_business_id = excluded.prospect_business_id,
+           suppression_status = excluded.suppression_status,
+           reason = excluded.reason,
+           created_at = now()`,
+      [randomUUID(), input.prospectBusinessId, input.emailAddress, input.status, input.reason],
+    );
+  }
+
+  async recordOutreachWorkflowFailure(input: {
+    prospectBusinessId: string;
+    failedStep: string;
+    errorSummary: string;
+    retryable: boolean;
+    provider: string;
+  }): Promise<void> {
+    await this.pool.query(
+      `insert into workflow_failures
+        (id, prospect_business_id, failed_step, error_summary, retryable, operator_visible_status, provider)
+       values ($1, $2, $3, $4, $5, 'visible', $6)`,
+      [
+        randomUUID(),
+        input.prospectBusinessId,
+        input.failedStep,
+        input.errorSummary,
+        input.retryable,
+        input.provider,
+      ],
+    );
+  }
+
   async saveBusinessContext(input: {
     prospectBusinessId: string;
     researchMode: ResearchMode;
@@ -1232,6 +1371,28 @@ export class PostgresProspectRegistry
     return row ? mapDraftOutreachRow(row) : undefined;
   }
 
+  private async getOutreachEmails(prospectBusinessId: string): Promise<OutreachEmail[]> {
+    const result = await this.pool.query(
+      `select *
+       from outreach_emails
+       where prospect_business_id = $1
+       order by created_at asc`,
+      [prospectBusinessId],
+    );
+    return result.rows.map(mapOutreachEmailRow);
+  }
+
+  private async getProspectWorkflowFailures(prospectBusinessId: string): Promise<WorkflowFailure[]> {
+    const result = await this.pool.query(
+      `select id, discovery_run_id, prospect_business_id, failed_step, error_summary, retryable, operator_visible_status, provider
+       from workflow_failures
+       where prospect_business_id = $1
+       order by created_at asc`,
+      [prospectBusinessId],
+    );
+    return result.rows.map(mapWorkflowFailureRow);
+  }
+
   private async upsertProspectBusiness(
     client: Queryable,
     place: GooglePlaceResult,
@@ -1467,6 +1628,38 @@ function mapDraftOutreachRow(row: {
   };
 }
 
+function mapOutreachEmailRow(row: {
+  id: string;
+  prospect_business_id: string;
+  draft_outreach_id?: string;
+  recipient_email_address: string;
+  provider: string;
+  provider_message_id?: string;
+  send_status: OutreachEmail["sendStatus"];
+  suppression_status: OutreachSuppressionStatus;
+  sent_at?: Date;
+  failure_metadata?: OutreachFailureMetadata | string | null;
+  created_at: Date;
+  updated_at: Date;
+}): OutreachEmail {
+  return {
+    id: row.id,
+    prospectBusinessId: row.prospect_business_id,
+    draftOutreachId: row.draft_outreach_id,
+    recipientEmailAddress: row.recipient_email_address,
+    provider: row.provider,
+    providerMessageId: row.provider_message_id,
+    sendStatus: row.send_status,
+    suppressionStatus: row.suppression_status,
+    sentAt: row.sent_at,
+    failureMetadata: row.failure_metadata
+      ? parseJsonb<OutreachFailureMetadata>(row.failure_metadata)
+      : undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
 type SerializedWebsiteScreenshotInput = Omit<WebsiteScreenshotInput, "capturedAt"> & {
   capturedAt: string;
 };
@@ -1601,16 +1794,18 @@ function mapAppearanceDetailRow(row: {
 
 function mapWorkflowFailureRow(row: {
   id: string;
-  discovery_run_id: string;
+  discovery_run_id?: string;
+  prospect_business_id?: string;
   failed_step: string;
   error_summary: string;
   retryable: boolean;
   operator_visible_status: string;
-  provider: "google_places";
+  provider: "google_places" | "resend";
 }): WorkflowFailure {
   return {
     id: row.id,
     discoveryRunId: row.discovery_run_id,
+    prospectBusinessId: row.prospect_business_id,
     failedStep: row.failed_step,
     errorSummary: row.error_summary,
     retryable: row.retryable,
