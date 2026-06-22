@@ -5,6 +5,12 @@ import type { AuditTrailGateway } from "../audit/auditTrail.js";
 import { buildOperatorSessionCookie, readOperatorSession, verifyOperatorCredentials } from "../auth/operatorSession.js";
 import type { BusinessContextResearcher, BusinessContextStore } from "../business-context/types.js";
 import { buildConfigReadout, type RuntimeConfiguration } from "../config/runtimeConfiguration.js";
+import { findContactEvidenceForProspect } from "../contact-finder/contact-finder-agent.js";
+import type {
+  ContactEvidenceSourceType,
+  ContactEvidenceStore,
+  ContactFinderAgent,
+} from "../contact-finder/types.js";
 import { runDiscovery } from "../discovery/run-discovery.js";
 import { startDiscoveryRunSchema } from "../discovery/start-discovery-run-schema.js";
 import type { BusinessDiscoverySource, ProspectRegistry } from "../discovery/types.js";
@@ -20,15 +26,17 @@ import { renderDashboardPage, renderLoginPage } from "./rendering.js";
 export type ReviewDashboardDependencies = {
   auditTrail: AuditTrailGateway;
   businessContextResearcher?: BusinessContextResearcher;
+  contactFinderAgent?: ContactFinderAgent;
   configuration: RuntimeConfiguration;
   discoverySource?: BusinessDiscoverySource;
-  prospectRegistry?: ProspectRegistry & Partial<BusinessContextStore & WebsiteAssessmentStore>;
+  prospectRegistry?: ProspectRegistry & Partial<BusinessContextStore & WebsiteAssessmentStore & ContactEvidenceStore>;
   websiteReviewerAgent?: WebsiteReviewerAgent;
 };
 
 export function createReviewDashboardApp({
   auditTrail,
   businessContextResearcher,
+  contactFinderAgent,
   configuration,
   discoverySource,
   prospectRegistry,
@@ -164,6 +172,86 @@ export function createReviewDashboardApp({
   );
 
   app.post(
+    "/api/prospect-businesses/:id/contact-finding",
+    requireOperator(configuration),
+    async (request, response) => {
+      if (!prospectRegistry || !prospectRegistry.saveContactEvidence || !contactFinderAgent) {
+        response.status(503).json({ error: "Contact Finder is not configured." });
+        return;
+      }
+
+      const contactEvidence = await findContactEvidenceForProspect({
+        prospectBusinessId: request.params.id,
+        prospectRegistry,
+        contactEvidenceStore: prospectRegistry as ProspectRegistry & ContactEvidenceStore,
+        contactFinderAgent,
+      });
+
+      response.status(201).json({ contactEvidence });
+    },
+  );
+
+  app.post(
+    "/api/prospect-businesses/:id/contact-evidence/:contactEvidenceId/approval",
+    requireOperator(configuration),
+    async (request, response) => {
+      if (!prospectRegistry || !prospectRegistry.approveContactEvidence) {
+        response.status(503).json({ error: "Contact Evidence approval is not configured." });
+        return;
+      }
+
+      const reason = optionalStringFromBody(request.body.reason);
+      if (!reason) {
+        response.status(400).json({ error: "reason is required." });
+        return;
+      }
+
+      const contactEvidence = await prospectRegistry.approveContactEvidence({
+        prospectBusinessId: request.params.id,
+        contactEvidenceId: request.params.contactEvidenceId,
+        actor: configuration.operatorUsername,
+        reason,
+      });
+
+      response.status(200).json({ contactEvidence });
+    },
+  );
+
+  app.post(
+    "/api/prospect-businesses/:id/contact-evidence",
+    requireOperator(configuration),
+    async (request, response) => {
+      if (!prospectRegistry || !prospectRegistry.addVerifiedContactEvidence) {
+        response.status(503).json({ error: "Verified Contact Evidence is not configured." });
+        return;
+      }
+
+      const emailAddress = optionalStringFromBody(request.body.emailAddress);
+      const sourceUrl = optionalStringFromBody(request.body.sourceUrl);
+      const sourceType = contactEvidenceSourceTypeFromBody(request.body.sourceType);
+      const reason = optionalStringFromBody(request.body.reason);
+
+      if (!emailAddress || !sourceUrl || !sourceType || !reason) {
+        response.status(400).json({
+          error: "emailAddress, sourceUrl, sourceType, and reason are required.",
+        });
+        return;
+      }
+
+      const contactEvidence = await prospectRegistry.addVerifiedContactEvidence({
+        prospectBusinessId: request.params.id,
+        emailAddress,
+        sourceUrl,
+        sourceType,
+        reason,
+        actor: configuration.operatorUsername,
+      });
+
+      response.status(201).json({ contactEvidence });
+    },
+  );
+
+  app.post(
     "/api/prospect-businesses/:id/preview-eligibility-override",
     requireOperator(configuration),
     async (request, response) => {
@@ -278,6 +366,19 @@ function websiteAssessmentInputFromBody(body: unknown): WebsiteAssessmentInput {
 
 function optionalStringFromBody(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function contactEvidenceSourceTypeFromBody(value: unknown): ContactEvidenceSourceType | undefined {
+  if (
+    value === "business_website" ||
+    value === "google_places" ||
+    value === "official_profile" ||
+    value === "official_search_result"
+  ) {
+    return value;
+  }
+
+  return undefined;
 }
 
 function screenshotFromBody(value: unknown): WebsiteScreenshotInput | undefined {

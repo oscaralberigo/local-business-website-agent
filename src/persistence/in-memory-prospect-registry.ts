@@ -9,6 +9,13 @@ import type {
   ExcludedResearchData,
   ResearchMode,
 } from "../business-context/types.js";
+import { classifyContactApprovalStatus, shouldPersistContactCandidate } from "../contact-finder/contact-suitability.js";
+import type {
+  ContactCandidate,
+  ContactEvidence,
+  ContactEvidenceSourceType,
+  ContactEvidenceStore,
+} from "../contact-finder/types.js";
 import type {
   DiscoveryAppearance,
   DiscoveryRun,
@@ -27,7 +34,9 @@ import type {
   WebsiteAssessmentStore,
 } from "../website-assessment/types.js";
 
-export class InMemoryProspectRegistry implements ProspectRegistry, BusinessContextStore, WebsiteAssessmentStore {
+export class InMemoryProspectRegistry
+  implements ProspectRegistry, BusinessContextStore, WebsiteAssessmentStore, ContactEvidenceStore
+{
   private readonly discoveryRuns = new Map<string, DiscoveryRun>();
   private readonly prospectBusinesses = new Map<string, ProspectBusiness>();
   private readonly prospectIdsByGooglePlaceId = new Map<string, string>();
@@ -35,6 +44,7 @@ export class InMemoryProspectRegistry implements ProspectRegistry, BusinessConte
   private readonly workflowFailures: WorkflowFailure[] = [];
   private readonly businessContexts = new Map<string, BusinessContext>();
   private readonly websiteAssessments = new Map<string, WebsiteAssessment>();
+  private readonly contactEvidenceByProspect = new Map<string, ContactEvidence[]>();
 
   async createDiscoveryRun(input: StartDiscoveryRunInput): Promise<DiscoveryRun> {
     const discoveryRun: DiscoveryRun = {
@@ -174,8 +184,121 @@ export class InMemoryProspectRegistry implements ProspectRegistry, BusinessConte
       latestDiscoveredRun: appearanceHistory[appearanceHistory.length - 1]!.discoveryRun,
       appearanceHistory,
       businessContext: this.businessContexts.get(prospectBusinessId),
+      contactEvidence: this.contactEvidenceByProspect.get(prospectBusinessId) ?? [],
       websiteAssessment: this.websiteAssessments.get(prospectBusinessId),
     };
+  }
+
+  async saveContactEvidence(input: {
+    prospectBusinessId: string;
+    candidates: ContactCandidate[];
+    foundAt?: Date;
+  }): Promise<ContactEvidence[]> {
+    const prospectBusiness = this.requireProspectBusiness(input.prospectBusinessId);
+    const foundAt = input.foundAt ?? new Date();
+    const contactEvidence = input.candidates
+      .filter(shouldPersistContactCandidate)
+      .map((candidate) => ({
+        id: randomUUID(),
+        prospectBusinessId: input.prospectBusinessId,
+        emailAddress: candidate.emailAddress,
+        sourceUrl: candidate.sourceUrl,
+        sourceType: candidate.sourceType,
+        confidence: candidate.confidence,
+        roleClassification: candidate.roleClassification,
+        outreachApprovalStatus: classifyContactApprovalStatus(candidate),
+        reason: candidate.reason,
+        foundAt,
+      }));
+
+    const existingApprovedContactEvidence = (
+      this.contactEvidenceByProspect.get(input.prospectBusinessId) ?? []
+    ).filter((evidence) => evidence.outreachApprovalStatus === "approved");
+    const allContactEvidence = [...existingApprovedContactEvidence, ...contactEvidence];
+
+    this.contactEvidenceByProspect.set(input.prospectBusinessId, allContactEvidence);
+    this.prospectBusinesses.set(input.prospectBusinessId, {
+      ...prospectBusiness,
+      prospectStatus: deriveProspectStatusFromContactEvidence(allContactEvidence),
+    });
+
+    return contactEvidence;
+  }
+
+  async approveContactEvidence(input: {
+    prospectBusinessId: string;
+    contactEvidenceId: string;
+    actor: string;
+    reason: string;
+    approvedAt?: Date;
+  }): Promise<ContactEvidence> {
+    const prospectBusiness = this.requireProspectBusiness(input.prospectBusinessId);
+    const contactEvidence = this.contactEvidenceByProspect.get(input.prospectBusinessId) ?? [];
+    const evidence = contactEvidence.find((candidate) => candidate.id === input.contactEvidenceId);
+    if (!evidence) {
+      throw new Error(`Contact Evidence not found: ${input.contactEvidenceId}`);
+    }
+    if (evidence.outreachApprovalStatus === "blocked") {
+      throw new Error(`Blocked Contact Evidence cannot be approved: ${input.contactEvidenceId}`);
+    }
+
+    const approvedEvidence: ContactEvidence = {
+      ...evidence,
+      outreachApprovalStatus: "approved",
+      approvedAt: input.approvedAt ?? new Date(),
+      approvedBy: input.actor,
+      approvalReason: input.reason,
+    };
+
+    this.contactEvidenceByProspect.set(
+      input.prospectBusinessId,
+      contactEvidence.map((candidate) =>
+        candidate.id === input.contactEvidenceId ? approvedEvidence : candidate,
+      ),
+    );
+    this.prospectBusinesses.set(input.prospectBusinessId, {
+      ...prospectBusiness,
+      prospectStatus: "drafting_outreach",
+    });
+
+    return approvedEvidence;
+  }
+
+  async addVerifiedContactEvidence(input: {
+    prospectBusinessId: string;
+    emailAddress: string;
+    sourceUrl: string;
+    sourceType: ContactEvidenceSourceType;
+    reason: string;
+    actor: string;
+    approvedAt?: Date;
+  }): Promise<ContactEvidence> {
+    const prospectBusiness = this.requireProspectBusiness(input.prospectBusinessId);
+    const approvedAt = input.approvedAt ?? new Date();
+    const evidence: ContactEvidence = {
+      id: randomUUID(),
+      prospectBusinessId: input.prospectBusinessId,
+      emailAddress: input.emailAddress,
+      sourceUrl: input.sourceUrl,
+      sourceType: input.sourceType,
+      confidence: 1,
+      roleClassification: "role",
+      outreachApprovalStatus: "approved",
+      reason: input.reason,
+      foundAt: approvedAt,
+      approvedAt,
+      approvedBy: input.actor,
+      approvalReason: input.reason,
+    };
+    const contactEvidence = this.contactEvidenceByProspect.get(input.prospectBusinessId) ?? [];
+
+    this.contactEvidenceByProspect.set(input.prospectBusinessId, [...contactEvidence, evidence]);
+    this.prospectBusinesses.set(input.prospectBusinessId, {
+      ...prospectBusiness,
+      prospectStatus: "drafting_outreach",
+    });
+
+    return evidence;
   }
 
   async saveWebsiteAssessment(input: SaveWebsiteAssessmentInput): Promise<WebsiteAssessment> {
@@ -367,4 +490,20 @@ export class InMemoryProspectRegistry implements ProspectRegistry, BusinessConte
     }
     return prospectBusiness;
   }
+}
+
+function deriveProspectStatusFromContactEvidence(
+  contactEvidence: ContactEvidence[],
+): ProspectBusiness["prospectStatus"] {
+  if (contactEvidence.some((evidence) => evidence.outreachApprovalStatus === "approved")) {
+    return "drafting_outreach";
+  }
+
+  if (
+    contactEvidence.some((evidence) => evidence.outreachApprovalStatus === "pending_operator_approval")
+  ) {
+    return "finding_contact";
+  }
+
+  return "contact_unavailable";
 }

@@ -2,6 +2,7 @@ import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
 
 import type { BusinessContextResearcher } from "../business-context/types.js";
+import type { ContactFinderAgent } from "../contact-finder/types.js";
 import { loadRuntimeConfiguration } from "../config/runtimeConfiguration.js";
 import { createReviewDashboardApp } from "./app.js";
 import type { WebsiteReviewerAgent } from "../website-assessment/types.js";
@@ -488,6 +489,158 @@ describe("Review Dashboard bootstrap slice", () => {
     const dashboard = await operator.get("/dashboard").expect(200);
     expect(dashboard.text).toContain("Website Assessment");
     expect(dashboard.text).toContain("Preview Eligibility");
+  });
+
+  it("lets the operator find, approve, and add Contact Evidence", async () => {
+    const configuration = loadRuntimeConfiguration(baseConfiguration);
+    const auditTrail = createAuditTrailStub();
+    const prospectBusiness = {
+      id: "prospect-1",
+      googlePlaceId: "places/detail-cafe",
+      name: "Detail Cafe",
+      websiteUrl: "https://detail.example",
+      categories: ["cafe"],
+      prospectStatus: "assessment_complete" as const,
+      sourceData: { placeId: "places/detail-cafe" },
+      firstSeenAt: new Date("2026-06-20T10:00:00.000Z"),
+      lastSeenAt: new Date("2026-06-21T11:00:00.000Z"),
+      firstDiscoveredRun: discoveryRunStub("run-1"),
+      latestDiscoveredRun: discoveryRunStub("run-1"),
+      appearanceHistory: [],
+    };
+    const foundContactEvidence = [
+      {
+        id: "contact-1",
+        prospectBusinessId: "prospect-1",
+        emailAddress: "hello@detail.example",
+        sourceUrl: "https://detail.example/contact",
+        sourceType: "business_website" as const,
+        confidence: 0.95,
+        roleClassification: "role" as const,
+        outreachApprovalStatus: "pending_operator_approval" as const,
+        reason: "Published on the official contact page.",
+        foundAt: new Date("2026-06-22T18:30:00.000Z"),
+      },
+    ];
+    const approvedContactEvidence = {
+      ...foundContactEvidence[0]!,
+      outreachApprovalStatus: "approved" as const,
+      approvedAt: new Date("2026-06-22T18:35:00.000Z"),
+      approvedBy: "operator",
+      approvalReason: "Operator verified this is the correct inbox.",
+    };
+    const manuallyAddedContactEvidence = {
+      id: "contact-2",
+      prospectBusinessId: "prospect-1",
+      emailAddress: "bookings@detail.example",
+      sourceUrl: "https://detail.example/contact",
+      sourceType: "business_website" as const,
+      confidence: 1,
+      roleClassification: "role" as const,
+      outreachApprovalStatus: "approved" as const,
+      reason: "Operator verified this contact path manually.",
+      foundAt: new Date("2026-06-22T18:40:00.000Z"),
+      approvedAt: new Date("2026-06-22T18:40:00.000Z"),
+      approvedBy: "operator",
+      approvalReason: "Operator verified this contact path manually.",
+    };
+    const prospectRegistry = {
+      createDiscoveryRun: vi.fn(),
+      recordDiscoveredProspect: vi.fn(),
+      completeDiscoveryRun: vi.fn(),
+      failDiscoveryRun: vi.fn(),
+      getDiscoveryRunDetail: vi.fn(),
+      listDiscoveryRuns: vi.fn(async () => []),
+      getProspectBusinessDetail: vi.fn(async () => prospectBusiness),
+      saveContactEvidence: vi.fn(async () => foundContactEvidence),
+      approveContactEvidence: vi.fn(async () => approvedContactEvidence),
+      addVerifiedContactEvidence: vi.fn(async () => manuallyAddedContactEvidence),
+    };
+    const contactFinderAgent: ContactFinderAgent = {
+      findContact: vi.fn(async () => [
+        {
+          emailAddress: "hello@detail.example",
+          sourceUrl: "https://detail.example/contact",
+          sourceType: "business_website" as const,
+          confidence: 0.95,
+          roleClassification: "role" as const,
+          acquisitionMethod: "published" as const,
+          reason: "Published on the official contact page.",
+        },
+      ]),
+    };
+
+    const app = createReviewDashboardApp({
+      auditTrail,
+      configuration,
+      prospectRegistry,
+      contactFinderAgent,
+    });
+    const operator = request.agent(app);
+
+    await operator
+      .post("/login")
+      .type("form")
+      .send({ username: "operator", password: baseConfiguration.OPERATOR_PASSWORD })
+      .expect(302);
+
+    const findResponse = await operator
+      .post("/api/prospect-businesses/prospect-1/contact-finding")
+      .send({})
+      .expect(201);
+
+    expect(contactFinderAgent.findContact).toHaveBeenCalledWith({ prospectBusiness });
+    expect(prospectRegistry.saveContactEvidence).toHaveBeenCalledWith({
+      prospectBusinessId: "prospect-1",
+      candidates: expect.any(Array),
+    });
+    expect(findResponse.body.contactEvidence).toMatchObject([
+      {
+        id: "contact-1",
+        sourceUrl: "https://detail.example/contact",
+        outreachApprovalStatus: "pending_operator_approval",
+      },
+    ]);
+
+    const approvalResponse = await operator
+      .post("/api/prospect-businesses/prospect-1/contact-evidence/contact-1/approval")
+      .send({ reason: "Operator verified this is the correct inbox." })
+      .expect(200);
+
+    expect(prospectRegistry.approveContactEvidence).toHaveBeenCalledWith({
+      prospectBusinessId: "prospect-1",
+      contactEvidenceId: "contact-1",
+      actor: "operator",
+      reason: "Operator verified this is the correct inbox.",
+    });
+    expect(approvalResponse.body.contactEvidence).toMatchObject({
+      id: "contact-1",
+      outreachApprovalStatus: "approved",
+      approvedBy: "operator",
+    });
+
+    const manualResponse = await operator
+      .post("/api/prospect-businesses/prospect-1/contact-evidence")
+      .send({
+        emailAddress: "bookings@detail.example",
+        sourceUrl: "https://detail.example/contact",
+        sourceType: "business_website",
+        reason: "Operator verified this contact path manually.",
+      })
+      .expect(201);
+
+    expect(prospectRegistry.addVerifiedContactEvidence).toHaveBeenCalledWith({
+      prospectBusinessId: "prospect-1",
+      emailAddress: "bookings@detail.example",
+      sourceUrl: "https://detail.example/contact",
+      sourceType: "business_website",
+      reason: "Operator verified this contact path manually.",
+      actor: "operator",
+    });
+    expect(manualResponse.body.contactEvidence).toMatchObject({
+      emailAddress: "bookings@detail.example",
+      outreachApprovalStatus: "approved",
+    });
   });
 
   it("lets the operator override Preview Eligibility with a reason", async () => {

@@ -283,6 +283,88 @@ describe("Postgres Prospect Registry", () => {
 
     await pool.end();
   });
+
+  it("persists Contact Evidence and lets the operator add a verified contact path", async () => {
+    const database = newDb();
+    const { Pool } = database.adapters.createPg();
+    const pool = new Pool();
+    const registry = new PostgresProspectRegistry(pool);
+    await pool.query(await readFile(new URL("../src/persistence/schema.sql", import.meta.url), "utf8"));
+
+    const discoveryRun = await runDiscovery({
+      request: discoveryRequest,
+      registry,
+      discoverySource: sourceReturning({
+        googlePlaceId: "places/contact-cafe",
+        name: "Contact Cafe",
+        websiteUrl: "https://contact-cafe.example",
+        categories: ["cafe"],
+        sourcePayload: { placeId: "places/contact-cafe" },
+      }),
+    });
+    const prospectBusinessId = discoveryRun.discoveredProspects[0]!.id;
+
+    const contactEvidence = await registry.saveContactEvidence({
+      prospectBusinessId,
+      foundAt: new Date("2026-06-22T18:10:00.000Z"),
+      candidates: [
+        {
+          emailAddress: "hello@contact-cafe.example",
+          sourceUrl: "https://contact-cafe.example/contact",
+          sourceType: "business_website",
+          confidence: 0.94,
+          roleClassification: "role",
+          acquisitionMethod: "published",
+          reason: "Published on the official contact page.",
+        },
+      ],
+    });
+
+    expect(contactEvidence).toEqual([
+      expect.objectContaining({
+        sourceUrl: "https://contact-cafe.example/contact",
+        sourceType: "business_website",
+        confidence: 0.94,
+        roleClassification: "role",
+        outreachApprovalStatus: "pending_operator_approval",
+      }),
+    ]);
+
+    const manuallyAdded = await registry.addVerifiedContactEvidence({
+      prospectBusinessId,
+      emailAddress: "bookings@contact-cafe.example",
+      sourceUrl: "https://contact-cafe.example/private-operator-notes",
+      sourceType: "business_website",
+      reason: "Operator verified this inbox during a manual review.",
+      actor: "operator",
+      approvedAt: new Date("2026-06-22T18:20:00.000Z"),
+    });
+
+    expect(manuallyAdded).toMatchObject({
+      emailAddress: "bookings@contact-cafe.example",
+      outreachApprovalStatus: "approved",
+      approvedBy: "operator",
+      approvalReason: "Operator verified this inbox during a manual review.",
+    });
+
+    const prospectDetail = await registry.getProspectBusinessDetail(prospectBusinessId);
+    expect(prospectDetail.prospectStatus).toBe("drafting_outreach");
+    expect(prospectDetail.contactEvidence).toEqual([
+      expect.objectContaining({
+        emailAddress: "hello@contact-cafe.example",
+        outreachApprovalStatus: "pending_operator_approval",
+      }),
+      expect.objectContaining({
+        emailAddress: "bookings@contact-cafe.example",
+        outreachApprovalStatus: "approved",
+        approvedBy: "operator",
+      }),
+    ]);
+
+    await expectCount(pool, "contact_evidence", prospectBusinessId, 2);
+
+    await pool.end();
+  });
 });
 
 function sourceReturning(place: GooglePlaceResult): BusinessDiscoverySource {
