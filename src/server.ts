@@ -3,6 +3,8 @@ import "dotenv/config";
 import { ZodError } from "zod";
 
 import { PostgresAuditTrailGateway } from "./audit/postgresAuditTrail.js";
+import { createBusinessContextResearcher } from "./business-context/business-context-researcher.js";
+import { createGooglePlacesBusinessContextTool } from "./business-context/google-places-business-context-tool.js";
 import { loadRuntimeConfiguration } from "./config/runtimeConfiguration.js";
 import { createPostgresPool } from "./database/postgresPool.js";
 import { GooglePlacesDiscoverySource } from "./google-places/google-places-discovery-source.js";
@@ -17,6 +19,9 @@ async function main(): Promise<void> {
   const discoverySource = configuration.googlePlacesApiKey
     ? new GooglePlacesDiscoverySource({ apiKey: configuration.googlePlacesApiKey })
     : undefined;
+  const businessContextResearcher = createBusinessContextResearcher({
+    researchTools: [createGooglePlacesBusinessContextTool()],
+  });
 
   await auditTrail.initialize();
 
@@ -24,6 +29,7 @@ async function main(): Promise<void> {
     auditTrail,
     configuration,
     discoverySource,
+    businessContextResearcher,
     prospectRegistry,
   });
   const server = app.listen(configuration.port, () => {

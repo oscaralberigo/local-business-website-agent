@@ -48,3 +48,59 @@ create table if not exists workflow_failures (
   provider text not null,
   created_at timestamptz not null default now()
 );
+
+create table if not exists business_context_sources (
+  id text primary key,
+  prospect_business_id uuid not null references prospect_businesses(id) on delete cascade,
+  research_mode text not null check (research_mode in ('expanded')),
+  source_type text not null check (
+    source_type in ('google_places', 'business_website', 'search_results', 'compliant_page_extraction')
+  ),
+  title text,
+  url text,
+  retrieved_at timestamptz not null default now(),
+  terms_compliance jsonb not null,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists business_context_facts (
+  id text primary key,
+  prospect_business_id uuid not null references prospect_businesses(id) on delete cascade,
+  source_id text not null references business_context_sources(id) on delete cascade,
+  label text not null,
+  value text not null,
+  source_quote text,
+  allowed_for_generation boolean not null default false,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists excluded_research_data (
+  id text primary key,
+  prospect_business_id uuid not null references prospect_businesses(id) on delete cascade,
+  source_id text references business_context_sources(id) on delete set null,
+  label text not null,
+  value_summary text not null,
+  reason text not null check (
+    reason in (
+      'personal_contact',
+      'staff_personal_profile',
+      'home_address',
+      'sensitive_inference',
+      'login_gated',
+      'paywalled',
+      'access_restricted',
+      'source_terms_disallowed'
+    )
+  ),
+  excluded_at timestamptz not null default now(),
+  created_at timestamptz not null default now()
+);
+
+create table if not exists supported_claims (
+  id text primary key,
+  prospect_business_id uuid not null references prospect_businesses(id) on delete cascade,
+  statement text not null,
+  evidence jsonb not null,
+  allowed_for_generation boolean not null default true,
+  created_at timestamptz not null default now()
+);

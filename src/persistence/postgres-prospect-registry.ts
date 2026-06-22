@@ -1,5 +1,16 @@
 import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
+import { excludeSourceDisallowedFacts } from "../business-context/source-compliance.js";
+import { deriveSupportedClaims } from "../business-context/supported-claims.js";
+import type {
+  BusinessContext,
+  BusinessContextFact,
+  BusinessContextSource,
+  BusinessContextStore,
+  ExcludedResearchData,
+  ResearchMode,
+  SupportedClaim,
+} from "../business-context/types.js";
 import type {
   DiscoveryAppearance,
   DiscoveryRun,
@@ -15,7 +26,7 @@ import type {
 
 type Queryable = Pool | PoolClient;
 
-export class PostgresProspectRegistry implements ProspectRegistry {
+export class PostgresProspectRegistry implements ProspectRegistry, BusinessContextStore {
   constructor(private readonly pool: Pool) {}
 
   async createDiscoveryRun(input: StartDiscoveryRunInput): Promise<DiscoveryRun> {
@@ -221,6 +232,151 @@ export class PostgresProspectRegistry implements ProspectRegistry {
       firstDiscoveredRun: appearanceHistory[0]!.discoveryRun,
       latestDiscoveredRun: appearanceHistory[appearanceHistory.length - 1]!.discoveryRun,
       appearanceHistory,
+      businessContext: await this.getBusinessContext(prospectBusinessId),
+    };
+  }
+
+  async saveBusinessContext(input: {
+    prospectBusinessId: string;
+    researchMode: ResearchMode;
+    sources: Array<Omit<BusinessContextSource, "id" | "prospectBusinessId" | "retrievedAt"> & {
+      id?: string;
+      retrievedAt?: Date;
+    }>;
+    facts: Array<Omit<BusinessContextFact, "id" | "prospectBusinessId"> & { id?: string }>;
+    excludedResearchData: Array<
+      Omit<ExcludedResearchData, "id" | "prospectBusinessId" | "excludedAt"> & {
+        id?: string;
+        excludedAt?: Date;
+      }
+    >;
+  }): Promise<BusinessContext> {
+    const filteredContext = excludeSourceDisallowedFacts({
+      sources: input.sources,
+      facts: input.facts,
+      excludedResearchData: input.excludedResearchData,
+    });
+    const sources = input.sources.map((source) => ({
+      ...source,
+      id: source.id ?? randomUUID(),
+      prospectBusinessId: input.prospectBusinessId,
+      retrievedAt: source.retrievedAt ?? new Date(),
+    }));
+    const facts = filteredContext.facts.map((fact) => ({
+      ...fact,
+      id: fact.id ?? randomUUID(),
+      prospectBusinessId: input.prospectBusinessId,
+    }));
+    const excludedResearchData = filteredContext.excludedResearchData.map((excluded) => ({
+      ...excluded,
+      id: excluded.id ?? randomUUID(),
+      prospectBusinessId: input.prospectBusinessId,
+      excludedAt: excluded.excludedAt ?? new Date(),
+    }));
+    const supportedClaims = deriveSupportedClaims({
+      prospectBusinessId: input.prospectBusinessId,
+      sources,
+      facts,
+    });
+
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      await client.query("delete from supported_claims where prospect_business_id = $1", [
+        input.prospectBusinessId,
+      ]);
+      await client.query("delete from excluded_research_data where prospect_business_id = $1", [
+        input.prospectBusinessId,
+      ]);
+      await client.query("delete from business_context_facts where prospect_business_id = $1", [
+        input.prospectBusinessId,
+      ]);
+      await client.query("delete from business_context_sources where prospect_business_id = $1", [
+        input.prospectBusinessId,
+      ]);
+
+      for (const source of sources) {
+        await client.query(
+          `insert into business_context_sources
+            (id, prospect_business_id, research_mode, source_type, title, url, retrieved_at, terms_compliance)
+           values ($1, $2, $3, $4, $5, $6, $7, $8)`,
+          [
+            source.id,
+            source.prospectBusinessId,
+            input.researchMode,
+            source.sourceType,
+            source.title,
+            source.url,
+            source.retrievedAt,
+            source.termsCompliance,
+          ],
+        );
+      }
+
+      for (const fact of facts) {
+        await client.query(
+          `insert into business_context_facts
+            (id, prospect_business_id, source_id, label, value, source_quote, allowed_for_generation)
+           values ($1, $2, $3, $4, $5, $6, $7)`,
+          [
+            fact.id,
+            fact.prospectBusinessId,
+            fact.sourceId,
+            fact.label,
+            fact.value,
+            fact.sourceQuote,
+            fact.allowedForGeneration,
+          ],
+        );
+      }
+
+      for (const excluded of excludedResearchData) {
+        await client.query(
+          `insert into excluded_research_data
+            (id, prospect_business_id, source_id, label, value_summary, reason, excluded_at)
+           values ($1, $2, $3, $4, $5, $6, $7)`,
+          [
+            excluded.id,
+            excluded.prospectBusinessId,
+            excluded.sourceId,
+            excluded.label,
+            excluded.valueSummary,
+            excluded.reason,
+            excluded.excludedAt,
+          ],
+        );
+      }
+
+      for (const claim of supportedClaims) {
+        await client.query(
+          `insert into supported_claims
+            (id, prospect_business_id, statement, evidence, allowed_for_generation)
+           values ($1, $2, $3, $4, $5)`,
+          [
+            claim.id,
+            claim.prospectBusinessId,
+            claim.statement,
+            claim.evidence,
+            claim.allowedForGeneration,
+          ],
+        );
+      }
+
+      await client.query("commit");
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+
+    return {
+      prospectBusinessId: input.prospectBusinessId,
+      researchMode: input.researchMode,
+      sources,
+      facts,
+      excludedResearchData,
+      supportedClaims,
     };
   }
 
@@ -236,6 +392,52 @@ export class PostgresProspectRegistry implements ProspectRegistry {
       throw new Error(`Discovery Run not found: ${discoveryRunId}`);
     }
     return mapDiscoveryRunRow(row);
+  }
+
+  private async getBusinessContext(prospectBusinessId: string): Promise<BusinessContext | undefined> {
+    const [sourcesResult, factsResult, excludedResult, claimsResult] = await Promise.all([
+      this.pool.query(
+        `select id, prospect_business_id, research_mode, source_type, title, url, retrieved_at, terms_compliance
+         from business_context_sources
+         where prospect_business_id = $1
+         order by retrieved_at asc, id asc`,
+        [prospectBusinessId],
+      ),
+      this.pool.query(
+        `select id, prospect_business_id, source_id, label, value, source_quote, allowed_for_generation
+         from business_context_facts
+         where prospect_business_id = $1
+         order by source_id asc, created_at asc, id asc`,
+        [prospectBusinessId],
+      ),
+      this.pool.query(
+        `select id, prospect_business_id, source_id, label, value_summary, reason, excluded_at
+         from excluded_research_data
+         where prospect_business_id = $1
+         order by excluded_at asc, id asc`,
+        [prospectBusinessId],
+      ),
+      this.pool.query(
+        `select id, prospect_business_id, statement, evidence, allowed_for_generation
+         from supported_claims
+         where prospect_business_id = $1
+         order by created_at asc, id asc`,
+        [prospectBusinessId],
+      ),
+    ]);
+
+    if (sourcesResult.rows.length === 0) {
+      return undefined;
+    }
+
+    return {
+      prospectBusinessId,
+      researchMode: sourcesResult.rows[0].research_mode,
+      sources: sourcesResult.rows.map(mapBusinessContextSourceRow),
+      facts: factsResult.rows.map(mapBusinessContextFactRow),
+      excludedResearchData: excludedResult.rows.map(mapExcludedResearchDataRow),
+      supportedClaims: claimsResult.rows.map(mapSupportedClaimRow),
+    };
   }
 
   private async upsertProspectBusiness(
@@ -397,5 +599,81 @@ function mapWorkflowFailureRow(row: {
     retryable: row.retryable,
     operatorVisibleStatus: row.operator_visible_status,
     provider: row.provider,
+  };
+}
+
+function mapBusinessContextSourceRow(row: {
+  id: string;
+  prospect_business_id: string;
+  source_type: BusinessContextSource["sourceType"];
+  title?: string;
+  url?: string;
+  retrieved_at: Date;
+  terms_compliance: BusinessContextSource["termsCompliance"];
+}): BusinessContextSource {
+  return {
+    id: row.id,
+    prospectBusinessId: row.prospect_business_id,
+    sourceType: row.source_type,
+    title: row.title,
+    url: row.url,
+    retrievedAt: row.retrieved_at,
+    termsCompliance: row.terms_compliance,
+  };
+}
+
+function mapBusinessContextFactRow(row: {
+  id: string;
+  prospect_business_id: string;
+  source_id: string;
+  label: string;
+  value: string;
+  source_quote?: string;
+  allowed_for_generation: boolean;
+}): BusinessContextFact {
+  return {
+    id: row.id,
+    prospectBusinessId: row.prospect_business_id,
+    sourceId: row.source_id,
+    label: row.label,
+    value: row.value,
+    sourceQuote: row.source_quote,
+    allowedForGeneration: row.allowed_for_generation,
+  };
+}
+
+function mapExcludedResearchDataRow(row: {
+  id: string;
+  prospect_business_id: string;
+  source_id?: string;
+  label: string;
+  value_summary: string;
+  reason: ExcludedResearchData["reason"];
+  excluded_at: Date;
+}): ExcludedResearchData {
+  return {
+    id: row.id,
+    prospectBusinessId: row.prospect_business_id,
+    sourceId: row.source_id,
+    label: row.label,
+    valueSummary: row.value_summary,
+    reason: row.reason,
+    excludedAt: row.excluded_at,
+  };
+}
+
+function mapSupportedClaimRow(row: {
+  id: string;
+  prospect_business_id: string;
+  statement: string;
+  evidence: SupportedClaim["evidence"] | SupportedClaim["evidence"][number];
+  allowed_for_generation: boolean;
+}): SupportedClaim {
+  return {
+    id: row.id,
+    prospectBusinessId: row.prospect_business_id,
+    statement: row.statement,
+    evidence: Array.isArray(row.evidence) ? row.evidence : [row.evidence],
+    allowedForGeneration: row.allowed_for_generation,
   };
 }

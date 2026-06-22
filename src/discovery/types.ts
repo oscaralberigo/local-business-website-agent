@@ -1,3 +1,5 @@
+import type { BusinessContext } from "../business-context/types.js";
+
 export type DiscoveryMode = "place_search" | "radius_search";
 
 export type ProspectStatus = "discovered" | "failed";
@@ -105,6 +107,7 @@ export type ProspectBusinessDetail = ProspectBusiness & {
   firstDiscoveredRun: DiscoveryRun;
   latestDiscoveredRun: DiscoveryRun;
   appearanceHistory: DiscoveryAppearanceDetail[];
+  businessContext?: BusinessContext;
 };
 
 export type ProspectRegistry = {
