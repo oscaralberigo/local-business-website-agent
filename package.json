@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "build:previews": "tsx src/preview-generation/build-previews.ts",
     "db:migrate": "tsx src/persistence/migrate.ts",
     "dev": "tsx watch src/server.ts",
     "start": "node dist/server.js",

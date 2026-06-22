@@ -14,6 +14,14 @@ import type {
 import { runDiscovery } from "../discovery/run-discovery.js";
 import { startDiscoveryRunSchema } from "../discovery/start-discovery-run-schema.js";
 import type { BusinessDiscoverySource, ProspectRegistry } from "../discovery/types.js";
+import { generatePreviewWebsite } from "../preview-generation/generate-preview-website.js";
+import type {
+  PreviewArtifactStore,
+  PreviewWebsiteOperatorEdit,
+  PreviewWebsiteStore,
+  WebsiteBuilderAgent,
+  WebsiteDesignerAgent,
+} from "../preview-generation/types.js";
 import { assessWebsiteOpportunity } from "../website-assessment/assess-website-opportunity.js";
 import type {
   WebsiteAssessmentInput,
@@ -29,7 +37,11 @@ export type ReviewDashboardDependencies = {
   contactFinderAgent?: ContactFinderAgent;
   configuration: RuntimeConfiguration;
   discoverySource?: BusinessDiscoverySource;
-  prospectRegistry?: ProspectRegistry & Partial<BusinessContextStore & WebsiteAssessmentStore & ContactEvidenceStore>;
+  prospectRegistry?: ProspectRegistry &
+    Partial<BusinessContextStore & WebsiteAssessmentStore & ContactEvidenceStore & PreviewWebsiteStore>;
+  previewArtifactStore?: PreviewArtifactStore;
+  websiteBuilderAgent?: WebsiteBuilderAgent;
+  websiteDesignerAgent?: WebsiteDesignerAgent;
   websiteReviewerAgent?: WebsiteReviewerAgent;
 };
 
@@ -40,6 +52,9 @@ export function createReviewDashboardApp({
   configuration,
   discoverySource,
   prospectRegistry,
+  previewArtifactStore,
+  websiteBuilderAgent,
+  websiteDesignerAgent,
   websiteReviewerAgent,
 }: ReviewDashboardDependencies) {
   const app = express();
@@ -47,6 +62,7 @@ export function createReviewDashboardApp({
   app.disable("x-powered-by");
   app.use(express.json({ limit: "64kb" }));
   app.use(express.urlencoded({ extended: false }));
+  app.use("/preview-artifacts", requireOperator(configuration), express.static(configuration.previewArtifactRoot));
 
   app.get("/", (request, response) => {
     response.redirect(isAuthenticated(request, configuration) ? "/dashboard" : "/login");
@@ -282,6 +298,59 @@ export function createReviewDashboardApp({
     },
   );
 
+  app.post(
+    "/api/prospect-businesses/:id/preview-website-generation",
+    requireOperator(configuration),
+    async (request, response) => {
+      if (
+        !prospectRegistry ||
+        !prospectRegistry.savePreviewWebsite ||
+        !previewArtifactStore ||
+        !websiteBuilderAgent ||
+        !websiteDesignerAgent
+      ) {
+        response.status(503).json({ error: "Preview Website generation is not configured." });
+        return;
+      }
+
+      const prospectBusiness = await prospectRegistry.getProspectBusinessDetail(request.params.id);
+      const previewWebsite = await generatePreviewWebsite({
+        prospectBusiness,
+        previewArtifactStore,
+        previewWebsiteStore: prospectRegistry as ProspectRegistry & PreviewWebsiteStore,
+        websiteBuilderAgent,
+        websiteDesignerAgent,
+      });
+
+      response.status(201).json({ previewWebsite });
+    },
+  );
+
+  app.patch(
+    "/api/prospect-businesses/:id/preview-website/operator-edits",
+    requireOperator(configuration),
+    async (request, response) => {
+      if (!prospectRegistry || !prospectRegistry.updatePreviewWebsiteOperatorEdits) {
+        response.status(503).json({ error: "Preview Website edits are not configured." });
+        return;
+      }
+
+      const edits = previewWebsiteOperatorEditsFromBody(request.body);
+      if (edits.length === 0) {
+        response.status(400).json({ error: "At least one Preview Website edit is required." });
+        return;
+      }
+
+      const previewWebsite = await prospectRegistry.updatePreviewWebsiteOperatorEdits({
+        prospectBusinessId: request.params.id,
+        actor: configuration.operatorUsername,
+        edits,
+      });
+
+      response.status(200).json({ previewWebsite });
+    },
+  );
+
   app.post("/api/discovery-runs", requireOperator(configuration), async (request, response) => {
     if (!prospectRegistry || !discoverySource) {
       response.status(503).json({ error: "Google Places discovery is not configured." });
@@ -379,6 +448,30 @@ function contactEvidenceSourceTypeFromBody(value: unknown): ContactEvidenceSourc
   }
 
   return undefined;
+}
+
+function previewWebsiteOperatorEditsFromBody(body: unknown): PreviewWebsiteOperatorEdit[] {
+  const record = isRecord(body) ? body : {};
+  if (!Array.isArray(record.edits)) {
+    return [];
+  }
+
+  return record.edits.flatMap((edit) => {
+    if (!isRecord(edit) || typeof edit.path !== "string") {
+      return [];
+    }
+
+    if (
+      typeof edit.value !== "string" &&
+      typeof edit.value !== "number" &&
+      typeof edit.value !== "boolean" &&
+      edit.value !== null
+    ) {
+      return [];
+    }
+
+    return [{ path: edit.path, value: edit.value }];
+  });
 }
 
 function screenshotFromBody(value: unknown): WebsiteScreenshotInput | undefined {

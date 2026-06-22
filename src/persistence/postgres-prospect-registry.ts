@@ -31,6 +31,18 @@ import type {
   StartDiscoveryRunInput,
   WorkflowFailure,
 } from "../discovery/types.js";
+import type {
+  OperatorEditableField,
+  PreviewArtifact,
+  PreviewBuildMetadata,
+  PreviewSourceReference,
+  PreviewWebsite,
+  PreviewWebsiteOperatorEdit,
+  PreviewWebsiteStatus,
+  PreviewWebsiteStore,
+  SavePreviewWebsiteInput,
+  WebsiteDesignPlan,
+} from "../preview-generation/types.js";
 import { derivePreviewEligibility } from "../website-assessment/preview-eligibility.js";
 import type {
   PreviewEligibility,
@@ -46,7 +58,7 @@ import type {
 type Queryable = Pool | PoolClient;
 
 export class PostgresProspectRegistry
-  implements ProspectRegistry, BusinessContextStore, WebsiteAssessmentStore, ContactEvidenceStore
+  implements ProspectRegistry, BusinessContextStore, WebsiteAssessmentStore, ContactEvidenceStore, PreviewWebsiteStore
 {
   constructor(private readonly pool: Pool) {}
 
@@ -255,6 +267,7 @@ export class PostgresProspectRegistry
       appearanceHistory,
       businessContext: await this.getBusinessContext(prospectBusinessId),
       contactEvidence: await this.getContactEvidence(prospectBusinessId),
+      previewWebsite: await this.getPreviewWebsite(prospectBusinessId),
       websiteAssessment: await this.getWebsiteAssessment(prospectBusinessId),
     };
   }
@@ -655,6 +668,130 @@ export class PostgresProspectRegistry
     return row ? mapWebsiteAssessmentRow(row) : undefined;
   }
 
+  async savePreviewWebsite(input: SavePreviewWebsiteInput): Promise<PreviewWebsite> {
+    const id = randomUUID();
+    const now = new Date();
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const result = await client.query(
+        `insert into preview_websites
+          (
+            id,
+            prospect_business_id,
+            slug,
+            status,
+            design_plan,
+            content_json,
+            source_references,
+            build_metadata,
+            artifact,
+            operator_editable_fields,
+            created_at,
+            updated_at
+          )
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)
+         on conflict (prospect_business_id) do update
+         set slug = excluded.slug,
+             status = excluded.status,
+             design_plan = excluded.design_plan,
+             content_json = excluded.content_json,
+             source_references = excluded.source_references,
+             build_metadata = excluded.build_metadata,
+             artifact = excluded.artifact,
+             operator_editable_fields = excluded.operator_editable_fields,
+             updated_at = excluded.updated_at
+         returning *`,
+        [
+          id,
+          input.prospectBusinessId,
+          input.slug,
+          input.status,
+          JSON.stringify(input.designPlan),
+          JSON.stringify(input.contentJson),
+          JSON.stringify(input.sourceReferences),
+          JSON.stringify(input.buildMetadata),
+          JSON.stringify(input.artifact),
+          JSON.stringify(input.operatorEditableFields),
+          now,
+        ],
+      );
+
+      await client.query(
+        `update prospect_businesses
+         set prospect_status = $2,
+             updated_at = now()
+         where id = $1`,
+        [input.prospectBusinessId, prospectStatusFromPreviewWebsiteStatus(input.status)],
+      );
+      await client.query("commit");
+
+      return mapPreviewWebsiteRow(result.rows[0]);
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async updatePreviewWebsiteOperatorEdits(input: {
+    prospectBusinessId: string;
+    actor: string;
+    edits: PreviewWebsiteOperatorEdit[];
+  }): Promise<PreviewWebsite> {
+    const existingPreviewWebsite = await this.getPreviewWebsite(input.prospectBusinessId);
+    if (!existingPreviewWebsite) {
+      throw new Error(`Preview Website not found: ${input.prospectBusinessId}`);
+    }
+
+    const contentJson = structuredClone(existingPreviewWebsite.contentJson);
+    const designPlan = structuredClone(existingPreviewWebsite.designPlan);
+    const operatorEditableFields = structuredClone(existingPreviewWebsite.operatorEditableFields);
+    const reviewablePaths = new Set(operatorEditableFields.map((field) => field.path));
+
+    for (const edit of input.edits) {
+      if (!reviewablePaths.has(edit.path)) {
+        throw new Error(`Preview Website field is not reviewable: ${edit.path}`);
+      }
+
+      if (edit.path.startsWith("contentJson.")) {
+        setJsonPath(contentJson, edit.path.slice("contentJson.".length), edit.value);
+      } else if (edit.path.startsWith("designPlan.")) {
+        setJsonPath(designPlan, edit.path.slice("designPlan.".length), edit.value);
+      } else {
+        throw new Error(`Preview Website field is not reviewable: ${edit.path}`);
+      }
+
+      const editableField = operatorEditableFields.find((field) => field.path === edit.path);
+      if (editableField) {
+        editableField.value = edit.value;
+      }
+    }
+
+    const result = await this.pool.query(
+      `update preview_websites
+       set content_json = $2,
+           design_plan = $3,
+           operator_editable_fields = $4,
+           updated_at = now()
+       where prospect_business_id = $1
+       returning *`,
+      [
+        input.prospectBusinessId,
+        JSON.stringify(contentJson),
+        JSON.stringify(designPlan),
+        JSON.stringify(operatorEditableFields),
+      ],
+    );
+    const row = result.rows[0];
+    if (!row) {
+      throw new Error(`Preview Website not found: ${input.prospectBusinessId}`);
+    }
+
+    return mapPreviewWebsiteRow(row);
+  }
+
   async saveBusinessContext(input: {
     prospectBusinessId: string;
     researchMode: ResearchMode;
@@ -870,6 +1007,17 @@ export class PostgresProspectRegistry
     return result.rows.map(mapContactEvidenceRow);
   }
 
+  private async getPreviewWebsite(prospectBusinessId: string): Promise<PreviewWebsite | undefined> {
+    const result = await this.pool.query(
+      `select *
+       from preview_websites
+       where prospect_business_id = $1`,
+      [prospectBusinessId],
+    );
+    const row = result.rows[0];
+    return row ? mapPreviewWebsiteRow(row) : undefined;
+  }
+
   private async upsertProspectBusiness(
     client: Queryable,
     place: GooglePlaceResult,
@@ -1042,6 +1190,36 @@ function mapContactEvidenceRow(row: {
     approvedAt: row.approved_at,
     approvedBy: row.approved_by,
     approvalReason: row.approval_reason,
+  };
+}
+
+function mapPreviewWebsiteRow(row: {
+  id: string;
+  prospect_business_id: string;
+  slug: string;
+  status: PreviewWebsiteStatus;
+  design_plan: WebsiteDesignPlan;
+  content_json: Record<string, unknown>;
+  source_references: PreviewSourceReference[];
+  build_metadata: PreviewBuildMetadata;
+  artifact: PreviewArtifact;
+  operator_editable_fields: OperatorEditableField[];
+  created_at: Date;
+  updated_at: Date;
+}): PreviewWebsite {
+  return {
+    id: row.id,
+    prospectBusinessId: row.prospect_business_id,
+    slug: row.slug,
+    status: row.status,
+    designPlan: parseJsonb<WebsiteDesignPlan>(row.design_plan),
+    contentJson: parseJsonb<Record<string, unknown>>(row.content_json),
+    sourceReferences: parseJsonb<PreviewSourceReference[]>(row.source_references),
+    buildMetadata: parseJsonb<PreviewBuildMetadata>(row.build_metadata),
+    artifact: parseJsonb<PreviewArtifact>(row.artifact),
+    operatorEditableFields: parseJsonb<OperatorEditableField[]>(row.operator_editable_fields),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
   };
 }
 
@@ -1257,4 +1435,55 @@ function deriveProspectStatusFromContactEvidence(input: {
   }
 
   return "contact_unavailable";
+}
+
+function prospectStatusFromPreviewWebsiteStatus(status: PreviewWebsiteStatus): ProspectStatus {
+  if (status === "published") {
+    return "preview_published";
+  }
+
+  if (status === "ready_for_review") {
+    return "preview_ready_for_review";
+  }
+
+  return "failed";
+}
+
+function setJsonPath(target: unknown, relativePath: string, value: string | number | boolean | null): void {
+  const segments = relativePath.split(".").filter(Boolean);
+  if (segments.length === 0) {
+    throw new Error("Preview Website edit path is empty.");
+  }
+
+  let current: unknown = target;
+  for (const [index, segment] of segments.entries()) {
+    const finalSegment = index === segments.length - 1;
+
+    if (Array.isArray(current)) {
+      const arrayIndex = Number(segment);
+      if (!Number.isInteger(arrayIndex) || arrayIndex < 0 || arrayIndex >= current.length) {
+        throw new Error(`Preview Website edit path is invalid: ${relativePath}`);
+      }
+
+      if (finalSegment) {
+        current[arrayIndex] = value;
+        return;
+      }
+
+      current = current[arrayIndex];
+      continue;
+    }
+
+    if (typeof current !== "object" || current === null || !(segment in current)) {
+      throw new Error(`Preview Website edit path is invalid: ${relativePath}`);
+    }
+
+    const record = current as Record<string, unknown>;
+    if (finalSegment) {
+      record[segment] = value;
+      return;
+    }
+
+    current = record[segment];
+  }
 }
