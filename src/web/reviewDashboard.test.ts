@@ -57,6 +57,7 @@ describe("Review Dashboard bootstrap slice", () => {
       actor: string;
       eventType: string;
       summary: string;
+      metadata: Record<string, unknown>;
     }> = [];
 
     const auditTrail = {
@@ -65,7 +66,8 @@ describe("Review Dashboard bootstrap slice", () => {
         events.unshift({
           id: events.length + 1,
           occurredAt: new Date("2026-06-22T14:30:00.000Z"),
-          ...event
+          ...event,
+          metadata: {},
         });
       }),
       listRecent: vi.fn(async () => events)
@@ -142,6 +144,73 @@ describe("Review Dashboard bootstrap slice", () => {
       metadata: {
         requireReviewBeforePreviewPublication: true,
         requireReviewBeforeOutreachSending: false,
+      },
+    }));
+  });
+
+  it("lets the operator retry a retryable Workflow Failure from the failed step", async () => {
+    const configuration = loadRuntimeConfiguration(baseConfiguration);
+    const auditTrail = createAuditTrailStub();
+    const workflowState = {
+      id: "workflow-state-1",
+      workflowKey: "discovery-run:run-1",
+      discoveryRunId: "run-1",
+      currentStep: "google_places_discovery",
+      status: "retrying" as const,
+      attemptCount: 1,
+      maxAttempts: 3,
+      lastFailureId: "failure-1",
+      stateData: {
+        retryRequestedBy: "operator",
+      },
+      promptVersions: {},
+      agentOutputSummaries: [],
+      sourceReferences: [],
+      resumedAt: new Date("2026-06-22T22:30:00.000Z"),
+      createdAt: new Date("2026-06-22T22:00:00.000Z"),
+      updatedAt: new Date("2026-06-22T22:30:00.000Z"),
+    };
+    const prospectRegistry = {
+      createDiscoveryRun: vi.fn(),
+      recordDiscoveredProspect: vi.fn(),
+      completeDiscoveryRun: vi.fn(),
+      failDiscoveryRun: vi.fn(),
+      getDiscoveryRunDetail: vi.fn(),
+      getProspectBusinessDetail: vi.fn(),
+      listDiscoveryRuns: vi.fn(async () => []),
+      retryWorkflowFailure: vi.fn(async () => workflowState),
+    };
+    const app = createReviewDashboardApp({ auditTrail, configuration, prospectRegistry });
+    const operator = request.agent(app);
+
+    await operator
+      .post("/login")
+      .type("form")
+      .send({ username: "operator", password: baseConfiguration.OPERATOR_PASSWORD })
+      .expect(302);
+
+    const response = await operator
+      .post("/api/workflow-failures/failure-1/retry")
+      .expect(200);
+
+    expect(prospectRegistry.retryWorkflowFailure).toHaveBeenCalledWith({
+      workflowFailureId: "failure-1",
+      actor: "operator",
+    });
+    expect(response.body.workflowState).toMatchObject({
+      workflowKey: "discovery-run:run-1",
+      currentStep: "google_places_discovery",
+      status: "retrying",
+      attemptCount: 1,
+    });
+    expect(auditTrail.record).toHaveBeenCalledWith(expect.objectContaining({
+      eventType: "workflow.retry_requested",
+      summary: "Operator requested retry for Workflow Failure failure-1.",
+      metadata: {
+        workflowFailureId: "failure-1",
+        workflowKey: "discovery-run:run-1",
+        currentStep: "google_places_discovery",
+        attemptCount: 1,
       },
     }));
   });

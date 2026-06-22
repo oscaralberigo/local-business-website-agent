@@ -524,6 +524,148 @@ describe("Postgres Prospect Registry", () => {
     await pool.end();
   });
 
+  it("persists retryable Workflow State from a failed Discovery Run step", async () => {
+    const database = newDb();
+    const { Pool } = database.adapters.createPg();
+    const pool = new Pool();
+    const registry = new PostgresProspectRegistry(pool);
+    await pool.query(await readFile(new URL("../src/persistence/schema.sql", import.meta.url), "utf8"));
+
+    const failedRun = await runDiscovery({
+      request: discoveryRequest,
+      registry,
+      discoverySource: {
+        async searchPlaces() {
+          throw new Error("Google Places timed out.");
+        },
+      },
+    });
+
+    expect(failedRun.status).toBe("failed");
+    expect(failedRun.workflowFailures).toEqual([
+      expect.objectContaining({
+        discoveryRunId: failedRun.id,
+        failedStep: "google_places_discovery",
+        errorSummary: "Google Places timed out.",
+        retryable: true,
+        operatorVisibleStatus: "visible",
+        provider: "google_places",
+        createdAt: expect.any(Date),
+      }),
+    ]);
+
+    const workflowState = await registry.retryWorkflowFailure({
+      workflowFailureId: failedRun.workflowFailures[0]!.id,
+      actor: "operator",
+    });
+
+    expect(workflowState).toMatchObject({
+      workflowKey: `discovery-run:${failedRun.id}`,
+      discoveryRunId: failedRun.id,
+      currentStep: "google_places_discovery",
+      status: "retrying",
+      attemptCount: 1,
+      lastFailureId: failedRun.workflowFailures[0]!.id,
+      stateData: {
+        retryRequestedBy: "operator",
+      },
+    });
+
+    await expect(registry.getWorkflowStateForDiscoveryRun(failedRun.id)).resolves.toMatchObject({
+      workflowKey: `discovery-run:${failedRun.id}`,
+      currentStep: "google_places_discovery",
+      status: "retrying",
+      attemptCount: 1,
+    });
+
+    await expect(registry.getDiscoveryRunDetail(failedRun.id)).resolves.toMatchObject({
+      workflowFailures: [
+        expect.objectContaining({
+          operatorVisibleStatus: "retrying",
+        }),
+      ],
+    });
+
+    await pool.end();
+  });
+
+  it("stores Prompt Versions with agent output summaries in Workflow State", async () => {
+    const database = newDb();
+    const { Pool } = database.adapters.createPg();
+    const pool = new Pool();
+    const registry = new PostgresProspectRegistry(pool);
+    await pool.query(await readFile(new URL("../src/persistence/schema.sql", import.meta.url), "utf8"));
+
+    const discoveryRun = await runDiscovery({
+      request: discoveryRequest,
+      registry,
+      discoverySource: sourceReturning({
+        googlePlaceId: "places/prompt-version-cafe",
+        name: "Prompt Version Cafe",
+        categories: ["cafe"],
+        sourcePayload: { placeId: "places/prompt-version-cafe" },
+      }),
+    });
+    const prospectBusinessId = discoveryRun.discoveredProspects[0]!.id;
+
+    await registry.saveWorkflowState({
+      workflowKey: `prospect-business:${prospectBusinessId}`,
+      prospectBusinessId,
+      currentStep: "website_designer_agent",
+      status: "paused_for_review",
+      promptVersions: {
+        websiteDesignerAgent: "website-designer-agent@2026-06-22",
+      },
+      agentOutputSummaries: [
+        {
+          agent: "website_designer_agent",
+          model: "gpt-4.1",
+          outputJsonSummary: {
+            primaryGoal: "menu_view",
+            sections: ["hero", "visit", "menu"],
+          },
+        },
+      ],
+      sourceReferences: [
+        {
+          sourceId: "google-places:prompt-version-cafe",
+          statement: "Prompt Version Cafe is categorized as a cafe.",
+        },
+      ],
+      stateData: {
+        reviewReason: "Preview Website design requires Human Review before building.",
+      },
+      pausedAt: new Date("2026-06-22T22:00:00.000Z"),
+    });
+
+    const prospectDetail = await registry.getProspectBusinessDetail(prospectBusinessId);
+    expect(prospectDetail.workflowState).toMatchObject({
+      workflowKey: `prospect-business:${prospectBusinessId}`,
+      currentStep: "website_designer_agent",
+      status: "paused_for_review",
+      promptVersions: {
+        websiteDesignerAgent: "website-designer-agent@2026-06-22",
+      },
+      agentOutputSummaries: [
+        {
+          agent: "website_designer_agent",
+          model: "gpt-4.1",
+          outputJsonSummary: {
+            primaryGoal: "menu_view",
+          },
+        },
+      ],
+      sourceReferences: [
+        {
+          sourceId: "google-places:prompt-version-cafe",
+        },
+      ],
+      pausedAt: new Date("2026-06-22T22:00:00.000Z"),
+    });
+
+    await pool.end();
+  });
+
   it("persists Preview Website metadata, generated content, source references, and artifact paths", async () => {
     const database = newDb();
     const { Pool } = database.adapters.createPg();

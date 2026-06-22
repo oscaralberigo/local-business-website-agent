@@ -11,6 +11,7 @@ export type AuditEvent = {
   actor: string;
   eventType: string;
   summary: string;
+  metadata: Record<string, unknown>;
 };
 
 export type ConnectivityStatus = {

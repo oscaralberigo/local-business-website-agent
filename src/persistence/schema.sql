@@ -74,6 +74,37 @@ create table if not exists workflow_failures (
 alter table workflow_failures
   add column if not exists prospect_business_id uuid references prospect_businesses(id) on delete cascade;
 
+alter table workflow_failures
+  add column if not exists created_at timestamptz not null default now();
+
+create table if not exists workflow_states (
+  id uuid primary key,
+  workflow_key text not null unique,
+  discovery_run_id uuid references discovery_runs(id) on delete cascade,
+  prospect_business_id uuid references prospect_businesses(id) on delete cascade,
+  current_step text not null,
+  status text not null check (
+    status in ('running', 'paused_for_review', 'failed', 'retrying', 'completed')
+  ),
+  attempt_count integer not null default 0 check (attempt_count >= 0),
+  max_attempts integer not null default 3 check (max_attempts > 0),
+  last_failure_id uuid references workflow_failures(id) on delete set null,
+  state_data jsonb not null default '{}'::jsonb,
+  prompt_versions jsonb not null default '{}'::jsonb,
+  agent_output_summaries jsonb not null default '[]'::jsonb,
+  source_references jsonb not null default '[]'::jsonb,
+  paused_at timestamptz,
+  resumed_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists workflow_states_by_discovery_run
+  on workflow_states (discovery_run_id);
+
+create index if not exists workflow_states_by_prospect
+  on workflow_states (prospect_business_id);
+
 create table if not exists business_context_sources (
   id text primary key,
   prospect_business_id uuid not null references prospect_businesses(id) on delete cascade,

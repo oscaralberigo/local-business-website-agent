@@ -135,6 +135,7 @@ export class InMemoryProspectRegistry
       retryable: input.retryable,
       operatorVisibleStatus: "visible",
       provider: "google_places",
+      createdAt: new Date(),
     });
   }
 
