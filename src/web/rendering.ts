@@ -189,7 +189,10 @@ export function renderDashboardPage(input: {
             </tr>
           \`).join("");
           const failures = run.workflowFailures.map((failure) => \`
-            <p class="failure">\${clientEscapeHtml(failure.failedStep)}: \${clientEscapeHtml(failure.errorSummary)}</p>
+            <form class="failure workflow-retry-form" method="post" action="/api/workflow-failures/\${clientEscapeHtml(failure.id)}/retry">
+              <span>\${clientEscapeHtml(failure.failedStep)}: \${clientEscapeHtml(failure.errorSummary)}</span>
+              \${failure.retryable ? '<button class="secondary-button" type="submit">Retry</button>' : ""}
+            </form>
           \`).join("");
           return \`
             <article class="discovery-run">
@@ -227,7 +230,12 @@ export function renderDashboardPage(input: {
               </div>
               <ul class="evidence-list">
                 \${workflowFailures.map((failure) => \`
-                  <li class="failure">\${clientEscapeHtml(failure.failedStep)}: \${clientEscapeHtml(failure.errorSummary)}\${failure.retryable ? " (retryable)" : ""}</li>
+                  <li class="failure">
+                    <form class="workflow-retry-form" method="post" action="/api/workflow-failures/\${clientEscapeHtml(failure.id)}/retry">
+                      <span>\${clientEscapeHtml(failure.failedStep)}: \${clientEscapeHtml(failure.errorSummary)}\${failure.retryable ? " (retryable)" : ""}</span>
+                      \${failure.retryable ? '<button class="secondary-button" type="submit">Retry</button>' : ""}
+                    </form>
+                  </li>
                 \`).join("")}
               </ul>
             </section>
@@ -770,6 +778,11 @@ export function renderDashboardPage(input: {
 }
 
 function renderAuditEvent(event: AuditEvent): string {
+  const metadataEntries = Object.entries(event.metadata);
+  const metadataMarkup = metadataEntries.length > 0
+    ? `<code>${escapeHtml(JSON.stringify(event.metadata))}</code>`
+    : "";
+
   return `
     <li>
       <time datetime="${escapeHtml(event.occurredAt.toISOString())}">${escapeHtml(
@@ -777,6 +790,7 @@ function renderAuditEvent(event: AuditEvent): string {
       )} UTC</time>
       <strong>${escapeHtml(event.eventType)}</strong>
       <span>${escapeHtml(event.summary)}</span>
+      ${metadataMarkup}
       <small>Actor: ${escapeHtml(event.actor)}</small>
     </li>
   `;

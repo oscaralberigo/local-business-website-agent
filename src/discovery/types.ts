@@ -105,7 +105,35 @@ export type WorkflowFailure = {
   errorSummary: string;
   retryable: boolean;
   operatorVisibleStatus: string;
-  provider: "google_places" | "resend";
+  provider: string;
+  createdAt: Date;
+};
+
+export type WorkflowStateStatus =
+  | "running"
+  | "paused_for_review"
+  | "failed"
+  | "retrying"
+  | "completed";
+
+export type WorkflowState = {
+  id: string;
+  workflowKey: string;
+  discoveryRunId?: string;
+  prospectBusinessId?: string;
+  currentStep: string;
+  status: WorkflowStateStatus;
+  attemptCount: number;
+  maxAttempts: number;
+  lastFailureId?: string;
+  stateData: Record<string, unknown>;
+  promptVersions: Record<string, string>;
+  agentOutputSummaries: Record<string, unknown>[];
+  sourceReferences: Record<string, unknown>[];
+  pausedAt?: Date;
+  resumedAt?: Date;
+  createdAt: Date;
+  updatedAt: Date;
 };
 
 export type DiscoveryRun = {
@@ -124,6 +152,7 @@ export type DiscoveryRunDetail = DiscoveryRun & {
   discoveredProspects: ProspectBusiness[];
   appearances: DiscoveryAppearance[];
   workflowFailures: WorkflowFailure[];
+  workflowState?: WorkflowState;
 };
 
 export type ProspectBusinessDetail = ProspectBusiness & {
@@ -135,6 +164,7 @@ export type ProspectBusinessDetail = ProspectBusiness & {
   draftOutreach?: DraftOutreach;
   outreachEmails?: OutreachEmail[];
   workflowFailures?: WorkflowFailure[];
+  workflowState?: WorkflowState;
   previewWebsite?: PreviewWebsite;
   websiteAssessment?: WebsiteAssessment;
 };
@@ -160,4 +190,32 @@ export type ProspectRegistry = {
   getDiscoveryRunDetail(discoveryRunId: string): Promise<DiscoveryRunDetail>;
   getProspectBusinessDetail(prospectBusinessId: string): Promise<ProspectBusinessDetail>;
   listDiscoveryRuns(): Promise<DiscoveryRunDetail[]>;
+};
+
+export type SaveWorkflowStateInput = {
+  workflowKey: string;
+  discoveryRunId?: string;
+  prospectBusinessId?: string;
+  currentStep: string;
+  status: WorkflowStateStatus;
+  attemptCount?: number;
+  maxAttempts?: number;
+  lastFailureId?: string;
+  stateData?: Record<string, unknown>;
+  promptVersions?: Record<string, string>;
+  agentOutputSummaries?: Record<string, unknown>[];
+  sourceReferences?: Record<string, unknown>[];
+  pausedAt?: Date;
+  resumedAt?: Date;
+};
+
+export type WorkflowStateStore = {
+  saveWorkflowState(input: SaveWorkflowStateInput): Promise<WorkflowState>;
+  getWorkflowState(workflowKey: string): Promise<WorkflowState | undefined>;
+  getWorkflowStateForDiscoveryRun(discoveryRunId: string): Promise<WorkflowState | undefined>;
+  getWorkflowStateForProspect(prospectBusinessId: string): Promise<WorkflowState | undefined>;
+  retryWorkflowFailure(input: {
+    workflowFailureId: string;
+    actor: string;
+  }): Promise<WorkflowState>;
 };

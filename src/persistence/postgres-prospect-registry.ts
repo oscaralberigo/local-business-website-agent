@@ -27,9 +27,13 @@ import type {
   ProspectBusinessDetail,
   ProspectRegistry,
   ProspectStatus,
+  SaveWorkflowStateInput,
   SearchLocation,
   StartDiscoveryRunInput,
   WorkflowFailure,
+  WorkflowState,
+  WorkflowStateStatus,
+  WorkflowStateStore,
 } from "../discovery/types.js";
 import type {
   DraftOutreach,
@@ -82,7 +86,8 @@ export class PostgresProspectRegistry
     DraftOutreachStore,
     OutreachEmailStore,
     OutreachSuppressionStore,
-    OutreachWorkflowFailureStore
+    OutreachWorkflowFailureStore,
+    WorkflowStateStore
 {
   constructor(private readonly pool: Pool) {}
 
@@ -188,12 +193,23 @@ export class PostgresProspectRegistry
        where id = $1`,
       [input.discoveryRunId, { errorSummary: input.errorSummary }],
     );
-    await this.pool.query(
+    const failureResult = await this.pool.query(
       `insert into workflow_failures
         (id, discovery_run_id, failed_step, error_summary, retryable, operator_visible_status, provider)
-       values ($1, $2, $3, $4, $5, 'visible', 'google_places')`,
+       values ($1, $2, $3, $4, $5, 'visible', 'google_places')
+       returning id`,
       [randomUUID(), input.discoveryRunId, input.failedStep, input.errorSummary, input.retryable],
     );
+    await this.saveWorkflowState({
+      workflowKey: `discovery-run:${input.discoveryRunId}`,
+      discoveryRunId: input.discoveryRunId,
+      currentStep: input.failedStep,
+      status: "failed",
+      lastFailureId: failureResult.rows[0]?.id,
+      stateData: {
+        errorSummary: input.errorSummary,
+      },
+    });
   }
 
   async getDiscoveryRunDetail(discoveryRunId: string): Promise<DiscoveryRunDetail> {
@@ -215,7 +231,7 @@ export class PostgresProspectRegistry
         [discoveryRunId],
       ),
       this.pool.query(
-        `select id, discovery_run_id, prospect_business_id, failed_step, error_summary, retryable, operator_visible_status, provider
+        `select id, discovery_run_id, prospect_business_id, failed_step, error_summary, retryable, operator_visible_status, provider, created_at
          from workflow_failures
          where discovery_run_id = $1
          order by created_at asc`,
@@ -228,6 +244,7 @@ export class PostgresProspectRegistry
       appearances: appearancesResult.rows.map(mapAppearanceRow),
       discoveredProspects: prospectsResult.rows.map(mapProspectRow),
       workflowFailures: failuresResult.rows.map(mapWorkflowFailureRow),
+      workflowState: await this.getWorkflowStateForDiscoveryRun(discoveryRunId),
     };
   }
 
@@ -294,9 +311,187 @@ export class PostgresProspectRegistry
       draftOutreach: await this.getDraftOutreach(prospectBusinessId),
       outreachEmails: await this.getOutreachEmails(prospectBusinessId),
       workflowFailures: await this.getProspectWorkflowFailures(prospectBusinessId),
+      workflowState: await this.getWorkflowStateForProspect(prospectBusinessId),
       previewWebsite: await this.getPreviewWebsite(prospectBusinessId),
       websiteAssessment: await this.getWebsiteAssessment(prospectBusinessId),
     };
+  }
+
+  async saveWorkflowState(input: SaveWorkflowStateInput): Promise<WorkflowState> {
+    return this.saveWorkflowStateWithClient(this.pool, input);
+  }
+
+  private async saveWorkflowStateWithClient(
+    client: Queryable,
+    input: SaveWorkflowStateInput,
+  ): Promise<WorkflowState> {
+    const id = randomUUID();
+    const now = new Date();
+    const result = await client.query(
+      `insert into workflow_states
+        (
+          id,
+          workflow_key,
+          discovery_run_id,
+          prospect_business_id,
+          current_step,
+          status,
+          attempt_count,
+          max_attempts,
+          last_failure_id,
+          state_data,
+          prompt_versions,
+          agent_output_summaries,
+          source_references,
+          paused_at,
+          resumed_at,
+          created_at,
+          updated_at
+        )
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $16)
+       on conflict (workflow_key) do update
+       set discovery_run_id = excluded.discovery_run_id,
+           prospect_business_id = excluded.prospect_business_id,
+           current_step = excluded.current_step,
+           status = excluded.status,
+           attempt_count = excluded.attempt_count,
+           max_attempts = excluded.max_attempts,
+           last_failure_id = excluded.last_failure_id,
+           state_data = excluded.state_data,
+           prompt_versions = excluded.prompt_versions,
+           agent_output_summaries = excluded.agent_output_summaries,
+           source_references = excluded.source_references,
+           paused_at = excluded.paused_at,
+           resumed_at = excluded.resumed_at,
+           updated_at = excluded.updated_at
+       returning *`,
+      [
+        id,
+        input.workflowKey,
+        input.discoveryRunId,
+        input.prospectBusinessId,
+        input.currentStep,
+        input.status,
+        input.attemptCount ?? 0,
+        input.maxAttempts ?? 3,
+        input.lastFailureId,
+        JSON.stringify(input.stateData ?? {}),
+        JSON.stringify(input.promptVersions ?? {}),
+        JSON.stringify(input.agentOutputSummaries ?? []),
+        JSON.stringify(input.sourceReferences ?? []),
+        input.pausedAt,
+        input.resumedAt,
+        now,
+      ],
+    );
+
+    return mapWorkflowStateRow(result.rows[0]);
+  }
+
+  async getWorkflowState(workflowKey: string): Promise<WorkflowState | undefined> {
+    const result = await this.pool.query(
+      `select *
+       from workflow_states
+       where workflow_key = $1`,
+      [workflowKey],
+    );
+    const row = result.rows[0];
+    return row ? mapWorkflowStateRow(row) : undefined;
+  }
+
+  async getWorkflowStateForDiscoveryRun(discoveryRunId: string): Promise<WorkflowState | undefined> {
+    const result = await this.pool.query(
+      `select *
+       from workflow_states
+       where discovery_run_id = $1
+       order by updated_at desc, created_at desc
+       limit 1`,
+      [discoveryRunId],
+    );
+    const row = result.rows[0];
+    return row ? mapWorkflowStateRow(row) : undefined;
+  }
+
+  async getWorkflowStateForProspect(prospectBusinessId: string): Promise<WorkflowState | undefined> {
+    const result = await this.pool.query(
+      `select *
+       from workflow_states
+       where prospect_business_id = $1
+       order by updated_at desc, created_at desc
+       limit 1`,
+      [prospectBusinessId],
+    );
+    const row = result.rows[0];
+    return row ? mapWorkflowStateRow(row) : undefined;
+  }
+
+  async retryWorkflowFailure(input: {
+    workflowFailureId: string;
+    actor: string;
+  }): Promise<WorkflowState> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const failureResult = await client.query(
+        `select id, discovery_run_id, prospect_business_id, failed_step, error_summary, retryable, operator_visible_status, provider, created_at
+         from workflow_failures
+         where id = $1`,
+        [input.workflowFailureId],
+      );
+      const failureRow = failureResult.rows[0];
+      if (!failureRow) {
+        throw new Error(`Workflow Failure not found: ${input.workflowFailureId}`);
+      }
+
+      const failure = mapWorkflowFailureRow(failureRow);
+      if (!failure.retryable) {
+        throw new Error(`Workflow Failure is not retryable: ${input.workflowFailureId}`);
+      }
+
+      const workflowKey = workflowKeyForFailure(failure);
+      const existingStateResult = await client.query(
+        `select *
+         from workflow_states
+         where workflow_key = $1`,
+        [workflowKey],
+      );
+      const existingState = existingStateResult.rows[0]
+        ? mapWorkflowStateRow(existingStateResult.rows[0])
+        : undefined;
+      const workflowState = await this.saveWorkflowStateWithClient(client, {
+        workflowKey,
+        discoveryRunId: failure.discoveryRunId,
+        prospectBusinessId: failure.prospectBusinessId,
+        currentStep: failure.failedStep,
+        status: "retrying",
+        attemptCount: (existingState?.attemptCount ?? 0) + 1,
+        maxAttempts: existingState?.maxAttempts ?? 3,
+        lastFailureId: failure.id,
+        stateData: {
+          ...(existingState?.stateData ?? {}),
+          retryRequestedBy: input.actor,
+          retryRequestedAt: new Date().toISOString(),
+        },
+        promptVersions: existingState?.promptVersions,
+        agentOutputSummaries: existingState?.agentOutputSummaries,
+        sourceReferences: existingState?.sourceReferences,
+        resumedAt: new Date(),
+      });
+
+      await client.query(
+        `update workflow_failures
+         set operator_visible_status = 'retrying'
+         where id = $1`,
+        [input.workflowFailureId],
+      );
+      await client.query("commit");
+      return workflowState;
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async saveContactEvidence(input: {
@@ -1384,7 +1579,7 @@ export class PostgresProspectRegistry
 
   private async getProspectWorkflowFailures(prospectBusinessId: string): Promise<WorkflowFailure[]> {
     const result = await this.pool.query(
-      `select id, discovery_run_id, prospect_business_id, failed_step, error_summary, retryable, operator_visible_status, provider
+      `select id, discovery_run_id, prospect_business_id, failed_step, error_summary, retryable, operator_visible_status, provider, created_at
        from workflow_failures
        where prospect_business_id = $1
        order by created_at asc`,
@@ -1800,7 +1995,8 @@ function mapWorkflowFailureRow(row: {
   error_summary: string;
   retryable: boolean;
   operator_visible_status: string;
-  provider: "google_places" | "resend";
+  provider: string;
+  created_at: Date;
 }): WorkflowFailure {
   return {
     id: row.id,
@@ -1811,7 +2007,60 @@ function mapWorkflowFailureRow(row: {
     retryable: row.retryable,
     operatorVisibleStatus: row.operator_visible_status,
     provider: row.provider,
+    createdAt: row.created_at,
   };
+}
+
+function mapWorkflowStateRow(row: {
+  id: string;
+  workflow_key: string;
+  discovery_run_id?: string;
+  prospect_business_id?: string;
+  current_step: string;
+  status: WorkflowStateStatus;
+  attempt_count: number;
+  max_attempts: number;
+  last_failure_id?: string;
+  state_data: Record<string, unknown> | string;
+  prompt_versions: Record<string, string> | string;
+  agent_output_summaries: Record<string, unknown>[] | string;
+  source_references: Record<string, unknown>[] | string;
+  paused_at?: Date;
+  resumed_at?: Date;
+  created_at: Date;
+  updated_at: Date;
+}): WorkflowState {
+  return {
+    id: row.id,
+    workflowKey: row.workflow_key,
+    discoveryRunId: row.discovery_run_id,
+    prospectBusinessId: row.prospect_business_id,
+    currentStep: row.current_step,
+    status: row.status,
+    attemptCount: row.attempt_count,
+    maxAttempts: row.max_attempts,
+    lastFailureId: row.last_failure_id,
+    stateData: parseJsonb<Record<string, unknown>>(row.state_data),
+    promptVersions: parseJsonb<Record<string, string>>(row.prompt_versions),
+    agentOutputSummaries: parseJsonb<Record<string, unknown>[]>(row.agent_output_summaries),
+    sourceReferences: parseJsonb<Record<string, unknown>[]>(row.source_references),
+    pausedAt: row.paused_at,
+    resumedAt: row.resumed_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function workflowKeyForFailure(failure: WorkflowFailure): string {
+  if (failure.discoveryRunId) {
+    return `discovery-run:${failure.discoveryRunId}`;
+  }
+
+  if (failure.prospectBusinessId) {
+    return `prospect-business:${failure.prospectBusinessId}`;
+  }
+
+  return `workflow-failure:${failure.id}`;
 }
 
 function mapBusinessContextSourceRow(row: {

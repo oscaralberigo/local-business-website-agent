@@ -13,7 +13,7 @@ import type {
 } from "../contact-finder/types.js";
 import { runDiscovery } from "../discovery/run-discovery.js";
 import { startDiscoveryRunSchema } from "../discovery/start-discovery-run-schema.js";
-import type { BusinessDiscoverySource, ProspectRegistry } from "../discovery/types.js";
+import type { BusinessDiscoverySource, ProspectRegistry, WorkflowStateStore } from "../discovery/types.js";
 import {
   draftOutreachForProspect,
   evaluateOutreachCompliance,
@@ -64,7 +64,8 @@ export type ReviewDashboardDependencies = {
         DraftOutreachStore &
         OutreachEmailStore &
         OutreachSuppressionStore &
-        OutreachWorkflowFailureStore
+        OutreachWorkflowFailureStore &
+        WorkflowStateStore
     >;
   outreachDrafterAgent?: OutreachDrafterAgent;
   previewArtifactStore?: PreviewArtifactStore;
@@ -196,6 +197,37 @@ export function createReviewDashboardApp({
     response.status(200).json({
       prospectBusiness: await prospectRegistry.getProspectBusinessDetail(request.params.id),
     });
+  });
+
+  app.post("/api/workflow-failures/:id/retry", requireOperator(configuration), async (request, response) => {
+    if (!prospectRegistry?.retryWorkflowFailure) {
+      response.status(503).json({ error: "Workflow retry is not configured." });
+      return;
+    }
+
+    try {
+      const workflowState = await prospectRegistry.retryWorkflowFailure({
+        workflowFailureId: request.params.id,
+        actor: configuration.operatorUsername,
+      });
+      await auditTrail.record({
+        actor: configuration.operatorUsername,
+        eventType: "workflow.retry_requested",
+        summary: `Operator requested retry for Workflow Failure ${request.params.id}.`,
+        metadata: {
+          workflowFailureId: request.params.id,
+          workflowKey: workflowState.workflowKey,
+          currentStep: workflowState.currentStep,
+          attemptCount: workflowState.attemptCount,
+        },
+      });
+
+      response.status(200).json({ workflowState });
+    } catch (error) {
+      response.status(409).json({
+        error: error instanceof Error ? error.message : "Workflow retry failed.",
+      });
+    }
   });
 
   app.post(
