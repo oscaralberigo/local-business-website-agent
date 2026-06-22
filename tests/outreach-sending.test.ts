@@ -130,6 +130,49 @@ describe("Outreach Email sending", () => {
     expect(outreachEmailStore.saveOutreachEmail).not.toHaveBeenCalled();
   });
 
+  it("records an operator-visible Workflow Failure when the Compliance Gate blocks sending", async () => {
+    const emailProvider: EmailSendingProvider = {
+      send: vi.fn(),
+    };
+    const outreachEmailStore: OutreachEmailStore = {
+      saveOutreachEmail: vi.fn(),
+    };
+    const workflowFailureStore = {
+      recordOutreachWorkflowFailure: vi.fn(async () => undefined),
+    };
+
+    await expect(
+      sendApprovedOutreachEmail({
+        prospectBusiness: prospectBusinessReadyForOutreach(),
+        emailProvider,
+        outreachEmailStore,
+        suppressionStore: {
+          getOutreachSuppressionStatus: vi.fn(async () => ({
+            status: "do_not_contact" as const,
+            reason: "Operator marked the Prospect Business as do-not-contact.",
+          })),
+        },
+        workflowFailureStore,
+        actor: "operator",
+        fromEmail: "Logan Sinclair <logan@example.com>",
+        senderIdentity: "Logan Sinclair",
+        postalAddress: "100 Main St, Beacon, NY 12508",
+        optOutWording: "Reply no thanks and I will not contact you again.",
+        approvalReason: "Review Policy skipped outreach Human Review.",
+      }),
+    ).rejects.toThrow("Do-not-contact prospects cannot receive outreach.");
+
+    expect(emailProvider.send).not.toHaveBeenCalled();
+    expect(outreachEmailStore.saveOutreachEmail).not.toHaveBeenCalled();
+    expect(workflowFailureStore.recordOutreachWorkflowFailure).toHaveBeenCalledWith({
+      prospectBusinessId: "prospect-1",
+      failedStep: "outreach_compliance_gate",
+      errorSummary: "Do-not-contact prospects cannot receive outreach.",
+      retryable: false,
+      provider: "resend",
+    });
+  });
+
   it("persists failure metadata and records a retryable Workflow Failure when provider send fails", async () => {
     const providerFailure = new Error("Resend accepted no requests right now.");
     const outreachEmailStore: OutreachEmailStore = {

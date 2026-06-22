@@ -4,7 +4,7 @@ import { ZodError } from "zod";
 import type { AuditTrailGateway } from "../audit/auditTrail.js";
 import { buildOperatorSessionCookie, readOperatorSession, verifyOperatorCredentials } from "../auth/operatorSession.js";
 import type { BusinessContextResearcher, BusinessContextStore } from "../business-context/types.js";
-import { buildConfigReadout, type RuntimeConfiguration } from "../config/runtimeConfiguration.js";
+import { buildConfigReadout, type ReviewPolicy, type RuntimeConfiguration } from "../config/runtimeConfiguration.js";
 import { findContactEvidenceForProspect } from "../contact-finder/contact-finder-agent.js";
 import type {
   ContactEvidenceSourceType,
@@ -90,6 +90,7 @@ export function createReviewDashboardApp({
   websiteReviewerAgent,
 }: ReviewDashboardDependencies) {
   const app = express();
+  let reviewPolicy: ReviewPolicy = { ...configuration.reviewPolicy };
 
   app.disable("x-powered-by");
   app.use(express.json({ limit: "64kb" }));
@@ -138,7 +139,32 @@ export function createReviewDashboardApp({
     const [database, auditEvents] = await Promise.all([auditTrail.verifyConnection(), auditTrail.listRecent(20)]);
     response
       .status(200)
-      .send(renderDashboardPage({ auditEvents, configReadout: buildConfigReadout(configuration), database }));
+      .send(renderDashboardPage({
+        auditEvents,
+        configReadout: buildConfigReadout(configuration),
+        database,
+        reviewPolicy,
+      }));
+  });
+
+  app.patch("/api/review-policy", requireOperator(configuration), async (request, response) => {
+    const nextReviewPolicy = reviewPolicyFromBody(request.body);
+    if (!nextReviewPolicy) {
+      response.status(400).json({
+        error: "Review Policy requires requireReviewBeforePreviewPublication and requireReviewBeforeOutreachSending booleans.",
+      });
+      return;
+    }
+
+    reviewPolicy = nextReviewPolicy;
+    await auditTrail.record({
+      actor: configuration.operatorUsername,
+      eventType: "review_policy.updated",
+      summary: "Operator updated Review Policy toggles.",
+      metadata: reviewPolicy,
+    });
+
+    response.status(200).json({ reviewPolicy });
   });
 
   app.get("/api/discovery-runs", requireOperator(configuration), async (_request, response) => {
@@ -394,14 +420,28 @@ export function createReviewDashboardApp({
       }
 
       const approvalReason = optionalStringFromBody(request.body.approvalReason);
-      if (configuration.reviewPolicy.requireReviewBeforePreviewPublication && !approvalReason) {
+      const humanApprovalRequired = reviewPolicy.requireReviewBeforePreviewPublication;
+      const policyApprovalReason = "Review Policy skipped preview Human Review.";
+      if (humanApprovalRequired && !approvalReason) {
         response.status(400).json({ error: "approvalReason is required." });
         return;
       }
+      const recordedApprovalReason = approvalReason ?? policyApprovalReason;
 
       const prospectBusiness = await prospectRegistry.getProspectBusinessDetail(request.params.id);
       const complianceDecision = evaluatePreviewPublicationCompliance(prospectBusiness);
       if (!complianceDecision.allowed || !prospectBusiness.previewWebsite) {
+        await auditTrail.record({
+          actor: configuration.operatorUsername,
+          eventType: "preview.publication_blocked",
+          summary: `Compliance Gate blocked Preview Website publication for Prospect Business ${request.params.id}.`,
+          metadata: {
+            prospectBusinessId: request.params.id,
+            humanApprovalRequired,
+            humanApprovalSkippedByReviewPolicy: !humanApprovalRequired,
+            reasons: complianceDecision.reasons,
+          },
+        });
         response.status(409).json({ error: complianceDecision.reasons.join(" ") });
         return;
       }
@@ -413,7 +453,7 @@ export function createReviewDashboardApp({
       const publication = {
         ...hostPublication,
         approvedBy: configuration.operatorUsername,
-        approvalReason: approvalReason ?? "Review Policy did not require Human Review.",
+        approvalReason: recordedApprovalReason,
       };
       if (!publication.noindex) {
         response.status(409).json({ error: "Published Preview must be served with noindex behavior." });
@@ -423,13 +463,20 @@ export function createReviewDashboardApp({
       const previewWebsite = await prospectRegistry.publishPreviewWebsite({
         prospectBusinessId: request.params.id,
         actor: configuration.operatorUsername,
-        approvalReason: approvalReason ?? "Review Policy did not require Human Review.",
+        approvalReason: recordedApprovalReason,
         publication,
       });
       await auditTrail.record({
         actor: configuration.operatorUsername,
         eventType: "preview.published",
-        summary: `Published Preview Website for Prospect Business ${request.params.id}.`,
+        summary: humanApprovalRequired
+          ? `Published Preview Website for Prospect Business ${request.params.id} after required Human Review.`
+          : `Published Preview Website for Prospect Business ${request.params.id}. Human Review skipped by Review Policy.`,
+        metadata: {
+          prospectBusinessId: request.params.id,
+          humanApprovalRequired,
+          humanApprovalSkippedByReviewPolicy: !humanApprovalRequired,
+        },
       });
 
       response.status(200).json({ previewWebsite });
@@ -537,10 +584,13 @@ export function createReviewDashboardApp({
         });
         return;
       }
-      if (configuration.reviewPolicy.requireReviewBeforeOutreachSending && !approvalReason) {
+      const humanApprovalRequired = reviewPolicy.requireReviewBeforeOutreachSending;
+      const policyApprovalReason = "Review Policy skipped outreach Human Review.";
+      if (humanApprovalRequired && !approvalReason) {
         response.status(400).json({ error: "approvalReason is required." });
         return;
       }
+      const recordedApprovalReason = approvalReason ?? policyApprovalReason;
 
       const prospectBusiness = await prospectRegistry.getProspectBusinessDetail(request.params.id);
       try {
@@ -555,12 +605,19 @@ export function createReviewDashboardApp({
           senderIdentity,
           postalAddress,
           optOutWording,
-          approvalReason: approvalReason ?? "Review Policy did not require Human Review.",
+          approvalReason: recordedApprovalReason,
         });
         await auditTrail.record({
           actor: configuration.operatorUsername,
           eventType: "outreach.sent",
-          summary: `Sent Outreach Email for Prospect Business ${request.params.id}.`,
+          summary: humanApprovalRequired
+            ? `Sent Outreach Email for Prospect Business ${request.params.id} after required Human Review.`
+            : `Sent Outreach Email for Prospect Business ${request.params.id}. Human Review skipped by Review Policy.`,
+          metadata: {
+            prospectBusinessId: request.params.id,
+            humanApprovalRequired,
+            humanApprovalSkippedByReviewPolicy: !humanApprovalRequired,
+          },
         });
 
         response.status(200).json({ outreachEmail });
@@ -686,6 +743,29 @@ function websiteAssessmentInputFromBody(body: unknown): WebsiteAssessmentInput {
 
 function optionalStringFromBody(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function reviewPolicyFromBody(body: unknown): ReviewPolicy | undefined {
+  const record = isRecord(body) ? body : {};
+  if (
+    typeof record.requireReviewBeforePreviewPublication !== "boolean" ||
+    typeof record.requireReviewBeforeOutreachSending !== "boolean"
+  ) {
+    return undefined;
+  }
+
+  const allowedKeys = new Set([
+    "requireReviewBeforePreviewPublication",
+    "requireReviewBeforeOutreachSending",
+  ]);
+  if (Object.keys(record).some((key) => !allowedKeys.has(key))) {
+    return undefined;
+  }
+
+  return {
+    requireReviewBeforePreviewPublication: record.requireReviewBeforePreviewPublication,
+    requireReviewBeforeOutreachSending: record.requireReviewBeforeOutreachSending,
+  };
 }
 
 function contactEvidenceSourceTypeFromBody(value: unknown): ContactEvidenceSourceType | undefined {

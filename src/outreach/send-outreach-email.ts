@@ -50,7 +50,15 @@ export async function sendApprovedOutreachEmail(input: {
     doNotContact: suppression.status === "do_not_contact",
   });
   if (!complianceDecision.allowed) {
-    throw new Error(complianceDecision.reasons.join(" "));
+    const errorSummary = complianceDecision.reasons.join(" ");
+    await input.workflowFailureStore.recordOutreachWorkflowFailure({
+      prospectBusinessId: input.prospectBusiness.id,
+      failedStep: "outreach_compliance_gate",
+      errorSummary,
+      retryable: false,
+      provider: "resend",
+    });
+    throw new Error(errorSummary);
   }
 
   try {

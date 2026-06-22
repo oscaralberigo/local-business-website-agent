@@ -101,6 +101,51 @@ describe("Review Dashboard bootstrap slice", () => {
     }
   });
 
+  it("exposes exactly the two operator-facing Review Policy toggles and lets the operator update them", async () => {
+    const configuration = loadRuntimeConfiguration({
+      ...baseConfiguration,
+      REVIEW_REQUIRE_PREVIEW_PUBLICATION: "false",
+      REVIEW_REQUIRE_OUTREACH_SENDING: "true",
+    });
+    const auditTrail = createAuditTrailStub();
+    const app = createReviewDashboardApp({ auditTrail, configuration });
+    const operator = request.agent(app);
+
+    await operator
+      .post("/login")
+      .type("form")
+      .send({ username: "operator", password: baseConfiguration.OPERATOR_PASSWORD })
+      .expect(302);
+
+    const dashboard = await operator.get("/dashboard").expect(200);
+
+    expect(dashboard.text.match(/type="checkbox"/g)).toHaveLength(2);
+    expect(dashboard.text).toContain('name="require-review-before-preview-publication"');
+    expect(dashboard.text).toContain('name="require-review-before-outreach-sending"');
+    expect(dashboard.text).toMatch(/name="require-review-before-outreach-sending"[^>]*checked/);
+    expect(dashboard.text).not.toMatch(/name="require-review-before-preview-publication"[^>]*checked/);
+
+    const response = await operator
+      .patch("/api/review-policy")
+      .send({
+        requireReviewBeforePreviewPublication: true,
+        requireReviewBeforeOutreachSending: false,
+      })
+      .expect(200);
+
+    expect(response.body.reviewPolicy).toEqual({
+      requireReviewBeforePreviewPublication: true,
+      requireReviewBeforeOutreachSending: false,
+    });
+    expect(auditTrail.record).toHaveBeenCalledWith(expect.objectContaining({
+      eventType: "review_policy.updated",
+      metadata: {
+        requireReviewBeforePreviewPublication: true,
+        requireReviewBeforeOutreachSending: false,
+      },
+    }));
+  });
+
   it("serves authenticated Prospect Business detail with first/latest Discovery Run and appearance history", async () => {
     const configuration = loadRuntimeConfiguration(baseConfiguration);
     const auditTrail = createAuditTrailStub();
@@ -1314,6 +1359,222 @@ describe("Review Dashboard bootstrap slice", () => {
     );
   });
 
+  it("auto-publishes a compliant Preview Website when Review Policy skips preview Human Review", async () => {
+    const configuration = loadRuntimeConfiguration({
+      ...baseConfiguration,
+      REVIEW_REQUIRE_PREVIEW_PUBLICATION: "false",
+    });
+    const auditTrail = createAuditTrailStub();
+    const previewWebsite = previewWebsiteReadyForReview();
+    const prospectBusiness = {
+      ...prospectBusinessWithPreview(previewWebsite),
+      businessContext: {
+        prospectBusinessId: "prospect-1",
+        researchMode: "expanded" as const,
+        sources: [],
+        facts: [],
+        excludedResearchData: [],
+        supportedClaims: [
+          {
+            id: "claim-1",
+            prospectBusinessId: "prospect-1",
+            statement: "Detail Cafe serves house-roasted coffee.",
+            evidence: [{ sourceId: "source-1", factId: "fact-1" }],
+            allowedForGeneration: true,
+          },
+        ],
+      },
+      websiteAssessment: {
+        id: "assessment-1",
+        prospectBusinessId: "prospect-1",
+        deterministicChecks: {
+          pageLoad: "reachable" as const,
+          https: "valid" as const,
+          mobileViewport: "rendered" as const,
+          contactInformationFound: true,
+          servicesFound: true,
+          brokenAssetsOrConsoleErrors: false,
+          thirdPartyOnlyPresence: false,
+        },
+        opportunityCategory: "outdated_or_low_quality" as const,
+        confidence: 0.82,
+        summary: "The current website is hard to scan on mobile.",
+        evidence: [],
+        recommendedPitchAngle: "modern_upgrade" as const,
+        safeClaims: [],
+        reviewNotes: [],
+        previewEligibility: {
+          eligibleByDefault: true,
+          effectiveEligible: true,
+          requiresOperatorReview: false,
+          overriddenByOperator: false,
+          reason: "This Opportunity Category is preview-eligible by default.",
+        },
+        assessedAt: new Date("2026-06-22T18:00:00.000Z"),
+      },
+    };
+    const hostPublication = {
+      previewUrl: "https://previews.example.com/published-previews/6d4a8a4b9de2484da8e04dd3/",
+      previewUrlPath: "/published-previews/6d4a8a4b9de2484da8e04dd3/",
+      deploymentId: "preview-deployment-1",
+      buildId: "npm-run-build-previews",
+      noindex: true,
+      publishedAt: new Date("2026-06-22T20:00:00.000Z"),
+      approvedBy: "",
+      approvalReason: "",
+    };
+    const policyApprovalReason = "Review Policy skipped preview Human Review.";
+    const publishedPreviewWebsite = {
+      ...previewWebsite,
+      status: "published" as const,
+      publication: {
+        ...hostPublication,
+        approvedBy: "operator",
+        approvalReason: policyApprovalReason,
+      },
+    };
+    const prospectRegistry = {
+      createDiscoveryRun: vi.fn(),
+      recordDiscoveredProspect: vi.fn(),
+      completeDiscoveryRun: vi.fn(),
+      failDiscoveryRun: vi.fn(),
+      getDiscoveryRunDetail: vi.fn(),
+      listDiscoveryRuns: vi.fn(async () => []),
+      getProspectBusinessDetail: vi.fn(async () => prospectBusiness),
+      publishPreviewWebsite: vi.fn(async () => publishedPreviewWebsite),
+    };
+    const previewHost = {
+      publish: vi.fn(async () => hostPublication),
+      unpublish: vi.fn(),
+    };
+
+    const app = createReviewDashboardApp({ auditTrail, configuration, prospectRegistry, previewHost });
+    const operator = request.agent(app);
+
+    await operator
+      .post("/login")
+      .type("form")
+      .send({ username: "operator", password: baseConfiguration.OPERATOR_PASSWORD })
+      .expect(302);
+
+    await operator
+      .post("/api/prospect-businesses/prospect-1/preview-website/publication")
+      .send({})
+      .expect(200);
+
+    expect(previewHost.publish).toHaveBeenCalledWith({
+      previewWebsite,
+      previewBaseUrl: "https://previews.example.com",
+    });
+    expect(prospectRegistry.publishPreviewWebsite).toHaveBeenCalledWith({
+      prospectBusinessId: "prospect-1",
+      actor: "operator",
+      approvalReason: policyApprovalReason,
+      publication: {
+        ...hostPublication,
+        approvedBy: "operator",
+        approvalReason: policyApprovalReason,
+      },
+    });
+    expect(auditTrail.record).toHaveBeenCalledWith(expect.objectContaining({
+      eventType: "preview.published",
+      summary: expect.stringContaining("Human Review skipped by Review Policy"),
+      metadata: expect.objectContaining({
+        humanApprovalRequired: false,
+        humanApprovalSkippedByReviewPolicy: true,
+      }),
+    }));
+  });
+
+  it("blocks auto-publishing when Review Policy skips preview Human Review but the Compliance Gate fails", async () => {
+    const configuration = loadRuntimeConfiguration({
+      ...baseConfiguration,
+      REVIEW_REQUIRE_PREVIEW_PUBLICATION: "false",
+    });
+    const auditTrail = createAuditTrailStub();
+    const previewWebsite = previewWebsiteReadyForReview();
+    const prospectBusiness = {
+      ...prospectBusinessWithPreview(previewWebsite),
+      businessContext: {
+        prospectBusinessId: "prospect-1",
+        researchMode: "expanded" as const,
+        sources: [],
+        facts: [],
+        excludedResearchData: [],
+        supportedClaims: [],
+      },
+      websiteAssessment: {
+        id: "assessment-1",
+        prospectBusinessId: "prospect-1",
+        deterministicChecks: {
+          pageLoad: "reachable" as const,
+          https: "valid" as const,
+          mobileViewport: "rendered" as const,
+          contactInformationFound: true,
+          servicesFound: true,
+          brokenAssetsOrConsoleErrors: false,
+          thirdPartyOnlyPresence: false,
+        },
+        opportunityCategory: "outdated_or_low_quality" as const,
+        confidence: 0.82,
+        summary: "The current website is hard to scan on mobile.",
+        evidence: [],
+        recommendedPitchAngle: "modern_upgrade" as const,
+        safeClaims: [],
+        reviewNotes: [],
+        previewEligibility: {
+          eligibleByDefault: true,
+          effectiveEligible: true,
+          requiresOperatorReview: false,
+          overriddenByOperator: false,
+          reason: "This Opportunity Category is preview-eligible by default.",
+        },
+        assessedAt: new Date("2026-06-22T18:00:00.000Z"),
+      },
+    };
+    const prospectRegistry = {
+      createDiscoveryRun: vi.fn(),
+      recordDiscoveredProspect: vi.fn(),
+      completeDiscoveryRun: vi.fn(),
+      failDiscoveryRun: vi.fn(),
+      getDiscoveryRunDetail: vi.fn(),
+      listDiscoveryRuns: vi.fn(async () => []),
+      getProspectBusinessDetail: vi.fn(async () => prospectBusiness),
+      publishPreviewWebsite: vi.fn(),
+    };
+    const previewHost = {
+      publish: vi.fn(),
+      unpublish: vi.fn(),
+    };
+
+    const app = createReviewDashboardApp({ auditTrail, configuration, prospectRegistry, previewHost });
+    const operator = request.agent(app);
+
+    await operator
+      .post("/login")
+      .type("form")
+      .send({ username: "operator", password: baseConfiguration.OPERATOR_PASSWORD })
+      .expect(302);
+
+    const response = await operator
+      .post("/api/prospect-businesses/prospect-1/preview-website/publication")
+      .send({})
+      .expect(409);
+
+    expect(response.body.error).toContain("Preview Website source references must all map to Supported Claims.");
+    expect(previewHost.publish).not.toHaveBeenCalled();
+    expect(prospectRegistry.publishPreviewWebsite).not.toHaveBeenCalled();
+    expect(auditTrail.record).toHaveBeenCalledWith(expect.objectContaining({
+      eventType: "preview.publication_blocked",
+      summary: expect.stringContaining("Compliance Gate blocked Preview Website publication"),
+      metadata: expect.objectContaining({
+        humanApprovalRequired: false,
+        humanApprovalSkippedByReviewPolicy: true,
+        reasons: ["Preview Website source references must all map to Supported Claims."],
+      }),
+    }));
+  });
+
   it("lets the operator unpublish a Published Preview so its Preview URL is no longer active", async () => {
     const configuration = loadRuntimeConfiguration(baseConfiguration);
     const auditTrail = createAuditTrailStub();
@@ -1740,6 +2001,88 @@ describe("Review Dashboard bootstrap slice", () => {
       }),
     ]);
   });
+
+  it("auto-sends compliant Outreach when Review Policy skips outreach Human Review", async () => {
+    const configuration = loadRuntimeConfiguration({
+      ...baseConfiguration,
+      REVIEW_REQUIRE_OUTREACH_SENDING: "false",
+    });
+    const auditTrail = createAuditTrailStub();
+    const sentAt = new Date("2026-06-22T21:00:00.000Z");
+    const prospectBusiness = prospectBusinessReadyForOutreachReview();
+    const outreachEmail = {
+      id: "outreach-email-1",
+      prospectBusinessId: "prospect-1",
+      draftOutreachId: "draft-1",
+      recipientEmailAddress: "hello@detail.example",
+      provider: "safe_test",
+      providerMessageId: "safe-test-123",
+      sendStatus: "sent" as const,
+      suppressionStatus: "clear" as const,
+      sentAt,
+      createdAt: sentAt,
+      updatedAt: sentAt,
+    };
+    const prospectRegistry = {
+      createDiscoveryRun: vi.fn(),
+      recordDiscoveredProspect: vi.fn(),
+      completeDiscoveryRun: vi.fn(),
+      failDiscoveryRun: vi.fn(),
+      getDiscoveryRunDetail: vi.fn(),
+      listDiscoveryRuns: vi.fn(async () => []),
+      getProspectBusinessDetail: vi.fn(async () => prospectBusiness),
+      saveOutreachEmail: vi.fn(async () => outreachEmail),
+      getOutreachSuppressionStatus: vi.fn(async () => ({ status: "clear" as const })),
+      recordOutreachWorkflowFailure: vi.fn(async () => undefined),
+    };
+    const emailProvider: EmailSendingProvider = {
+      send: vi.fn(async () => ({
+        provider: "safe_test",
+        providerMessageId: "safe-test-123",
+        sentAt,
+      })),
+    };
+
+    const app = createReviewDashboardApp({
+      auditTrail,
+      configuration,
+      prospectRegistry,
+      emailProvider,
+    });
+    const operator = request.agent(app);
+
+    await operator
+      .post("/login")
+      .type("form")
+      .send({ username: "operator", password: baseConfiguration.OPERATOR_PASSWORD })
+      .expect(302);
+
+    await operator
+      .post("/api/prospect-businesses/prospect-1/outreach-email/send")
+      .send({
+        fromEmail: "Logan Sinclair <logan@example.com>",
+        senderIdentity: "Logan Sinclair",
+        postalAddress: "100 Main St, Beacon, NY 12508",
+        optOutWording: "Reply no thanks and I will not contact you again.",
+      })
+      .expect(200);
+
+    expect(emailProvider.send).toHaveBeenCalledWith({
+      from: "Logan Sinclair <logan@example.com>",
+      to: "hello@detail.example",
+      subject: "Website preview for Detail Cafe",
+      text: prospectBusiness.draftOutreach?.bodyText,
+      html: prospectBusiness.draftOutreach?.bodyHtml,
+    });
+    expect(auditTrail.record).toHaveBeenCalledWith(expect.objectContaining({
+      eventType: "outreach.sent",
+      summary: expect.stringContaining("Human Review skipped by Review Policy"),
+      metadata: expect.objectContaining({
+        humanApprovalRequired: false,
+        humanApprovalSkippedByReviewPolicy: true,
+      }),
+    }));
+  });
 });
 
 function createAuditTrailStub() {
@@ -1842,5 +2185,90 @@ function prospectBusinessWithPreview(previewWebsite: PreviewWebsite) {
     latestDiscoveredRun: discoveryRunStub("run-1"),
     appearanceHistory: [],
     previewWebsite,
+  };
+}
+
+function prospectBusinessReadyForOutreachReview() {
+  return {
+    ...prospectBusinessWithPreview({
+      ...previewWebsiteReadyForReview(),
+      status: "published" as const,
+      publication: {
+        previewUrl: "https://previews.example.com/published-previews/abc123/",
+        previewUrlPath: "/published-previews/abc123/",
+        deploymentId: "abc123",
+        buildId: "npm-run-build-previews",
+        noindex: true,
+        publishedAt: new Date("2026-06-22T19:00:00.000Z"),
+        approvedBy: "operator",
+        approvalReason: "Approved for publication.",
+      },
+    }),
+    prospectStatus: "outreach_ready_for_review" as const,
+    contactEvidence: [
+      {
+        id: "contact-1",
+        prospectBusinessId: "prospect-1",
+        emailAddress: "hello@detail.example",
+        sourceUrl: "https://detail.example/contact",
+        sourceType: "business_website" as const,
+        confidence: 0.95,
+        roleClassification: "role" as const,
+        outreachApprovalStatus: "approved" as const,
+        reason: "Published on the official contact page.",
+        foundAt: new Date("2026-06-22T18:30:00.000Z"),
+        approvedAt: new Date("2026-06-22T18:35:00.000Z"),
+        approvedBy: "operator",
+        approvalReason: "Operator verified this is the correct inbox.",
+      },
+    ],
+    draftOutreach: {
+      id: "draft-1",
+      prospectBusinessId: "prospect-1",
+      subject: "Website preview for Detail Cafe",
+      bodyText:
+        "Hi Detail Cafe team,\nhttps://previews.example.com/published-previews/abc123/\nLogan Sinclair\n100 Main St, Beacon, NY 12508\nReply no thanks and I will not contact you again.",
+      bodyHtml:
+        "<p>Hi Detail Cafe team</p><p>https://previews.example.com/published-previews/abc123/</p><p>Logan Sinclair</p><p>100 Main St, Beacon, NY 12508</p><p>Reply no thanks and I will not contact you again.</p>",
+      claimsUsed: [
+        {
+          claim: "The current website could make contact details easier to find.",
+          source: "website_assessment.safe_claims",
+        },
+      ],
+      complianceNotes: ["Operator review is required before sending."],
+      requiresOperatorReview: true,
+      createdAt: new Date("2026-06-22T20:00:00.000Z"),
+      updatedAt: new Date("2026-06-22T20:00:00.000Z"),
+    },
+    websiteAssessment: {
+      id: "assessment-1",
+      prospectBusinessId: "prospect-1",
+      deterministicChecks: {
+        pageLoad: "reachable" as const,
+        https: "valid" as const,
+        mobileViewport: "rendered" as const,
+        contactInformationFound: true,
+        servicesFound: true,
+        brokenAssetsOrConsoleErrors: false,
+        thirdPartyOnlyPresence: false,
+      },
+      opportunityCategory: "outdated_or_low_quality" as const,
+      confidence: 0.77,
+      summary: "The site is reachable, but key cafe details are hard to scan on mobile.",
+      evidence: [],
+      recommendedPitchAngle: "modern_upgrade" as const,
+      safeClaims: ["The current website could make contact details easier to find."],
+      reviewNotes: [],
+      previewEligibility: {
+        eligibleByDefault: true,
+        effectiveEligible: true,
+        requiresOperatorReview: false,
+        overriddenByOperator: false,
+        reason: "This Opportunity Category is preview-eligible by default.",
+      },
+      assessedAt: new Date("2026-06-22T16:50:00.000Z"),
+    },
+    workflowFailures: [],
   };
 }
