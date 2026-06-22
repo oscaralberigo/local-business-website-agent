@@ -1,0 +1,43 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-local_business_agent}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local_business_agent}
+      POSTGRES_DB: ${POSTGRES_DB:-local_business_agent}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-local_business_agent} -d ${POSTGRES_DB:-local_business_agent}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  web:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      APP_BASE_URL: ${APP_BASE_URL:-http://localhost:3000}
+      PREVIEW_BASE_URL: ${PREVIEW_BASE_URL:-http://localhost:8080}
+      OPERATOR_USERNAME: ${OPERATOR_USERNAME:-operator}
+      OPERATOR_PASSWORD: ${OPERATOR_PASSWORD:-change-me-local-password}
+      OPERATOR_SESSION_SECRET: ${OPERATOR_SESSION_SECRET:-change-me-local-session-secret}
+      DATABASE_URL: postgres://${POSTGRES_USER:-local_business_agent}:${POSTGRES_PASSWORD:-local_business_agent}@postgres:5432/${POSTGRES_DB:-local_business_agent}
+      DATABASE_SSL: "false"
+      GOOGLE_PLACES_API_KEY: ${GOOGLE_PLACES_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      REVIEW_REQUIRE_PREVIEW_PUBLICATION: ${REVIEW_REQUIRE_PREVIEW_PUBLICATION:-true}
+      REVIEW_REQUIRE_OUTREACH_SENDING: ${REVIEW_REQUIRE_OUTREACH_SENDING:-true}
+      DISCOVERY_LIMIT: ${DISCOVERY_LIMIT:-20}
+    ports:
+      - "${APP_PORT:-3000}:3000"
+
+volumes:
+  postgres-data:
