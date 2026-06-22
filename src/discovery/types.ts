@@ -85,6 +85,26 @@ export type ProspectBusiness = {
   lastSeenAt: Date;
 };
 
+export type ReplyTracking = {
+  prospectBusinessId: string;
+  repliedAt: Date;
+  summary: string;
+  notes?: string;
+  recordedBy: string;
+  recordedAt: Date;
+};
+
+export type WorkConversionStatus = "serious_opportunity" | "work_won" | "work_lost";
+
+export type WorkConversion = {
+  prospectBusinessId: string;
+  conversionStatus: WorkConversionStatus;
+  estimatedValueCents?: number;
+  notes?: string;
+  recordedBy: string;
+  recordedAt: Date;
+};
+
 export type DiscoveryAppearance = {
   discoveryRunId: string;
   prospectBusinessId: string;
@@ -167,6 +187,8 @@ export type ProspectBusinessDetail = ProspectBusiness & {
   workflowState?: WorkflowState;
   previewWebsite?: PreviewWebsite;
   websiteAssessment?: WebsiteAssessment;
+  replyTracking?: ReplyTracking;
+  workConversion?: WorkConversion;
 };
 
 export type ProspectRegistry = {
@@ -190,6 +212,23 @@ export type ProspectRegistry = {
   getDiscoveryRunDetail(discoveryRunId: string): Promise<DiscoveryRunDetail>;
   getProspectBusinessDetail(prospectBusinessId: string): Promise<ProspectBusinessDetail>;
   listDiscoveryRuns(): Promise<DiscoveryRunDetail[]>;
+};
+
+export type ManualTrackingStore = {
+  recordManualReply(input: {
+    prospectBusinessId: string;
+    repliedAt: Date;
+    summary: string;
+    notes?: string;
+    actor: string;
+  }): Promise<ProspectBusinessDetail>;
+  recordManualWorkConversion(input: {
+    prospectBusinessId: string;
+    conversionStatus: WorkConversionStatus;
+    estimatedValueCents?: number;
+    notes?: string;
+    actor: string;
+  }): Promise<ProspectBusinessDetail>;
 };
 
 export type SaveWorkflowStateInput = {

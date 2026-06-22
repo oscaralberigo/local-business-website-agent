@@ -524,6 +524,150 @@ describe("Postgres Prospect Registry", () => {
     await pool.end();
   });
 
+  it("persists manual Reply Tracking and moves Prospect Status to replied", async () => {
+    const database = newDb();
+    const { Pool } = database.adapters.createPg();
+    const pool = new Pool();
+    const registry = new PostgresProspectRegistry(pool);
+    await pool.query(await readFile(new URL("../src/persistence/schema.sql", import.meta.url), "utf8"));
+
+    const discoveryRun = await runDiscovery({
+      request: discoveryRequest,
+      registry,
+      discoverySource: sourceReturning({
+        googlePlaceId: "places/reply-cafe",
+        name: "Reply Cafe",
+        categories: ["cafe"],
+        sourcePayload: { placeId: "places/reply-cafe" },
+      }),
+    });
+    const prospectBusinessId = discoveryRun.discoveredProspects[0]!.id;
+
+    const prospectDetail = await registry.recordManualReply({
+      prospectBusinessId,
+      repliedAt: new Date("2026-06-22T22:15:00.000Z"),
+      summary: "The owner replied and asked for pricing.",
+      notes: "Follow up manually with a small-cafe package estimate.",
+      actor: "operator",
+    });
+
+    expect(prospectDetail.prospectStatus).toBe("replied");
+    expect(prospectDetail.replyTracking).toMatchObject({
+      prospectBusinessId,
+      repliedAt: new Date("2026-06-22T22:15:00.000Z"),
+      summary: "The owner replied and asked for pricing.",
+      notes: "Follow up manually with a small-cafe package estimate.",
+      recordedBy: "operator",
+      recordedAt: expect.any(Date),
+    });
+
+    await expect(registry.getProspectBusinessDetail(prospectBusinessId)).resolves.toMatchObject({
+      prospectStatus: "replied",
+      replyTracking: {
+        summary: "The owner replied and asked for pricing.",
+        recordedBy: "operator",
+      },
+    });
+    await expectCount(pool, "reply_tracking", prospectBusinessId, 1);
+    await pool.end();
+  });
+
+  it("persists manual Work Conversion and moves Prospect Status to work_won", async () => {
+    const database = newDb();
+    const { Pool } = database.adapters.createPg();
+    const pool = new Pool();
+    const registry = new PostgresProspectRegistry(pool);
+    await pool.query(await readFile(new URL("../src/persistence/schema.sql", import.meta.url), "utf8"));
+
+    const discoveryRun = await runDiscovery({
+      request: discoveryRequest,
+      registry,
+      discoverySource: sourceReturning({
+        googlePlaceId: "places/work-won-cafe",
+        name: "Work Won Cafe",
+        categories: ["cafe"],
+        sourcePayload: { placeId: "places/work-won-cafe" },
+      }),
+    });
+    const prospectBusinessId = discoveryRun.discoveredProspects[0]!.id;
+
+    const prospectDetail = await registry.recordManualWorkConversion({
+      prospectBusinessId,
+      conversionStatus: "work_won",
+      estimatedValueCents: 250000,
+      notes: "Owner approved a starter website package.",
+      actor: "operator",
+    });
+
+    expect(prospectDetail.prospectStatus).toBe("work_won");
+    expect(prospectDetail.workConversion).toMatchObject({
+      prospectBusinessId,
+      conversionStatus: "work_won",
+      estimatedValueCents: 250000,
+      notes: "Owner approved a starter website package.",
+      recordedBy: "operator",
+      recordedAt: expect.any(Date),
+    });
+
+    await expect(registry.getProspectBusinessDetail(prospectBusinessId)).resolves.toMatchObject({
+      prospectStatus: "work_won",
+      workConversion: {
+        conversionStatus: "work_won",
+        estimatedValueCents: 250000,
+        recordedBy: "operator",
+      },
+    });
+    await expectCount(pool, "work_conversions", prospectBusinessId, 1);
+    await pool.end();
+  });
+
+  it("includes Follow-Up Outreach metadata hooks without automated follow-up sending", async () => {
+    const database = newDb();
+    const { Pool } = database.adapters.createPg();
+    const pool = new Pool();
+    const registry = new PostgresProspectRegistry(pool);
+    await pool.query(await readFile(new URL("../src/persistence/schema.sql", import.meta.url), "utf8"));
+
+    const discoveryRun = await runDiscovery({
+      request: discoveryRequest,
+      registry,
+      discoverySource: sourceReturning({
+        googlePlaceId: "places/follow-up-cafe",
+        name: "Follow Up Cafe",
+        categories: ["cafe"],
+        sourcePayload: { placeId: "places/follow-up-cafe" },
+      }),
+    });
+    const prospectBusinessId = discoveryRun.discoveredProspects[0]!.id;
+
+    await pool.query(
+      `insert into follow_up_outreach_metadata
+        (prospect_business_id, follow_up_status, next_follow_up_at, notes, recorded_by)
+       values ($1, 'manual_follow_up_needed', $2, $3, 'operator')`,
+      [
+        prospectBusinessId,
+        new Date("2026-06-29T15:00:00.000Z"),
+        "Operator may follow up manually next week.",
+      ],
+    );
+
+    const result = await pool.query(
+      `select follow_up_status, next_follow_up_at, notes, recorded_by
+       from follow_up_outreach_metadata
+       where prospect_business_id = $1`,
+      [prospectBusinessId],
+    );
+
+    expect(result.rows[0]).toMatchObject({
+      follow_up_status: "manual_follow_up_needed",
+      next_follow_up_at: new Date("2026-06-29T15:00:00.000Z"),
+      notes: "Operator may follow up manually next week.",
+      recorded_by: "operator",
+    });
+    await expectCount(pool, "outreach_emails", prospectBusinessId, 0);
+    await pool.end();
+  });
+
   it("persists retryable Workflow State from a failed Discovery Run step", async () => {
     const database = newDb();
     const { Pool } = database.adapters.createPg();

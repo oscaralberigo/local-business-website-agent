@@ -23,13 +23,17 @@ import type {
   DiscoveryRun,
   DiscoveryRunDetail,
   GooglePlaceResult,
+  ManualTrackingStore,
   ProspectBusiness,
   ProspectBusinessDetail,
   ProspectRegistry,
   ProspectStatus,
+  ReplyTracking,
   SaveWorkflowStateInput,
   SearchLocation,
   StartDiscoveryRunInput,
+  WorkConversion,
+  WorkConversionStatus,
   WorkflowFailure,
   WorkflowState,
   WorkflowStateStatus,
@@ -87,6 +91,7 @@ export class PostgresProspectRegistry
     OutreachEmailStore,
     OutreachSuppressionStore,
     OutreachWorkflowFailureStore,
+    ManualTrackingStore,
     WorkflowStateStore
 {
   constructor(private readonly pool: Pool) {}
@@ -314,7 +319,103 @@ export class PostgresProspectRegistry
       workflowState: await this.getWorkflowStateForProspect(prospectBusinessId),
       previewWebsite: await this.getPreviewWebsite(prospectBusinessId),
       websiteAssessment: await this.getWebsiteAssessment(prospectBusinessId),
+      replyTracking: await this.getReplyTracking(prospectBusinessId),
+      workConversion: await this.getWorkConversion(prospectBusinessId),
     };
+  }
+
+  async recordManualReply(input: {
+    prospectBusinessId: string;
+    repliedAt: Date;
+    summary: string;
+    notes?: string;
+    actor: string;
+  }): Promise<ProspectBusinessDetail> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      await client.query(
+        `insert into reply_tracking
+          (prospect_business_id, replied_at, summary, notes, recorded_by)
+         values ($1, $2, $3, $4, $5)
+         on conflict (prospect_business_id) do update
+         set replied_at = excluded.replied_at,
+             summary = excluded.summary,
+             notes = excluded.notes,
+             recorded_by = excluded.recorded_by,
+             updated_at = now()`,
+        [
+          input.prospectBusinessId,
+          input.repliedAt,
+          input.summary,
+          input.notes,
+          input.actor,
+        ],
+      );
+      await client.query(
+        `update prospect_businesses
+         set prospect_status = 'replied',
+             updated_at = now()
+         where id = $1`,
+        [input.prospectBusinessId],
+      );
+      await client.query("commit");
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+
+    return this.getProspectBusinessDetail(input.prospectBusinessId);
+  }
+
+  async recordManualWorkConversion(input: {
+    prospectBusinessId: string;
+    conversionStatus: WorkConversionStatus;
+    estimatedValueCents?: number;
+    notes?: string;
+    actor: string;
+  }): Promise<ProspectBusinessDetail> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      await client.query(
+        `insert into work_conversions
+          (prospect_business_id, conversion_status, estimated_value_cents, notes, recorded_by)
+         values ($1, $2, $3, $4, $5)
+         on conflict (prospect_business_id) do update
+         set conversion_status = excluded.conversion_status,
+             estimated_value_cents = excluded.estimated_value_cents,
+             notes = excluded.notes,
+             recorded_by = excluded.recorded_by,
+             updated_at = now()`,
+        [
+          input.prospectBusinessId,
+          input.conversionStatus,
+          input.estimatedValueCents,
+          input.notes,
+          input.actor,
+        ],
+      );
+      if (input.conversionStatus === "work_won") {
+        await client.query(
+          `update prospect_businesses
+           set prospect_status = 'work_won',
+               updated_at = now()
+           where id = $1`,
+          [input.prospectBusinessId],
+        );
+      }
+      await client.query("commit");
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+
+    return this.getProspectBusinessDetail(input.prospectBusinessId);
   }
 
   async saveWorkflowState(input: SaveWorkflowStateInput): Promise<WorkflowState> {
@@ -1588,6 +1689,28 @@ export class PostgresProspectRegistry
     return result.rows.map(mapWorkflowFailureRow);
   }
 
+  private async getReplyTracking(prospectBusinessId: string): Promise<ReplyTracking | undefined> {
+    const result = await this.pool.query(
+      `select prospect_business_id, replied_at, summary, notes, recorded_by, recorded_at
+       from reply_tracking
+       where prospect_business_id = $1`,
+      [prospectBusinessId],
+    );
+    const row = result.rows[0];
+    return row ? mapReplyTrackingRow(row) : undefined;
+  }
+
+  private async getWorkConversion(prospectBusinessId: string): Promise<WorkConversion | undefined> {
+    const result = await this.pool.query(
+      `select prospect_business_id, conversion_status, estimated_value_cents, notes, recorded_by, recorded_at
+       from work_conversions
+       where prospect_business_id = $1`,
+      [prospectBusinessId],
+    );
+    const row = result.rows[0];
+    return row ? mapWorkConversionRow(row) : undefined;
+  }
+
   private async upsertProspectBusiness(
     client: Queryable,
     place: GooglePlaceResult,
@@ -2048,6 +2171,42 @@ function mapWorkflowStateRow(row: {
     resumedAt: row.resumed_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  };
+}
+
+function mapReplyTrackingRow(row: {
+  prospect_business_id: string;
+  replied_at: Date;
+  summary: string;
+  notes?: string;
+  recorded_by: string;
+  recorded_at: Date;
+}): ReplyTracking {
+  return {
+    prospectBusinessId: row.prospect_business_id,
+    repliedAt: row.replied_at,
+    summary: row.summary,
+    notes: row.notes,
+    recordedBy: row.recorded_by,
+    recordedAt: row.recorded_at,
+  };
+}
+
+function mapWorkConversionRow(row: {
+  prospect_business_id: string;
+  conversion_status: WorkConversionStatus;
+  estimated_value_cents?: number;
+  notes?: string;
+  recorded_by: string;
+  recorded_at: Date;
+}): WorkConversion {
+  return {
+    prospectBusinessId: row.prospect_business_id,
+    conversionStatus: row.conversion_status,
+    estimatedValueCents: row.estimated_value_cents,
+    notes: row.notes,
+    recordedBy: row.recorded_by,
+    recordedAt: row.recorded_at,
   };
 }
 
