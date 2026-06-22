@@ -1,30 +1,55 @@
-import pg from "pg";
-import { createDashboardServer } from "./dashboard/http-server.js";
+import "dotenv/config";
+
+import { ZodError } from "zod";
+
+import { PostgresAuditTrailGateway } from "./audit/postgresAuditTrail.js";
+import { loadRuntimeConfiguration } from "./config/runtimeConfiguration.js";
+import { createPostgresPool } from "./database/postgresPool.js";
 import { GooglePlacesDiscoverySource } from "./google-places/google-places-discovery-source.js";
-import { InMemoryProspectRegistry } from "./persistence/in-memory-prospect-registry.js";
 import { PostgresProspectRegistry } from "./persistence/postgres-prospect-registry.js";
+import { createReviewDashboardApp } from "./web/app.js";
 
-const port = Number(process.env.PORT ?? 3000);
-const googlePlacesApiKey = process.env.GOOGLE_PLACES_API_KEY;
+async function main(): Promise<void> {
+  const configuration = loadRuntimeConfiguration(process.env);
+  const pool = createPostgresPool(configuration);
+  const auditTrail = new PostgresAuditTrailGateway(pool);
+  const prospectRegistry = new PostgresProspectRegistry(pool);
+  const discoverySource = configuration.googlePlacesApiKey
+    ? new GooglePlacesDiscoverySource({ apiKey: configuration.googlePlacesApiKey })
+    : undefined;
 
-if (!googlePlacesApiKey) {
-  throw new Error("GOOGLE_PLACES_API_KEY is required to start Discovery Runs");
+  await auditTrail.initialize();
+
+  const app = createReviewDashboardApp({
+    auditTrail,
+    configuration,
+    discoverySource,
+    prospectRegistry,
+  });
+  const server = app.listen(configuration.port, () => {
+    console.log(`Review Dashboard listening on port ${configuration.port}`);
+  });
+
+  const shutdown = async () => {
+    server.close();
+    await pool.end();
+  };
+
+  process.once("SIGTERM", shutdown);
+  process.once("SIGINT", shutdown);
 }
 
-const pool = process.env.DATABASE_URL
-  ? new pg.Pool({ connectionString: process.env.DATABASE_URL })
-  : undefined;
+main().catch((error: unknown) => {
+  if (error instanceof ZodError) {
+    console.error("Runtime configuration is invalid:");
+    for (const issue of error.issues) {
+      console.error(`- ${issue.path.join(".")}: ${issue.message}`);
+    }
+  } else if (error instanceof Error) {
+    console.error(error.message);
+  } else {
+    console.error("Unknown startup failure");
+  }
 
-const server = createDashboardServer({
-  registry: pool ? new PostgresProspectRegistry(pool) : new InMemoryProspectRegistry(),
-  discoverySource: new GooglePlacesDiscoverySource({ apiKey: googlePlacesApiKey }),
-});
-
-server.listen(port, () => {
-  process.stdout.write(`Review Dashboard listening on http://localhost:${port}\n`);
-});
-
-process.on("SIGTERM", async () => {
-  server.close();
-  await pool?.end();
+  process.exitCode = 1;
 });

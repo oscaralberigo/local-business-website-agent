@@ -1,6 +1,6 @@
 # Local Business Website Agent
 
-TypeScript application for an agentic workflow that discovers local Prospect Businesses, generates reviewable Svelte preview websites, and prepares compliant outreach.
+Single-operator TypeScript/Postgres app for an agentic workflow that discovers local prospect businesses, generates reviewable Svelte preview websites, and prepares compliant outreach.
 
 Start with:
 
@@ -9,26 +9,46 @@ Start with:
 - [Architecture decisions](./docs/adr/)
 - [Agent prompt skeletons](./docs/prompts/)
 
-## Discovery Runs
+## Bootstrap Review Dashboard
 
-The Review Dashboard can start Google Places Discovery Runs in `place_search` or `radius_search` mode. Runs persist query metadata, Search Location, Discovery Limit, Prospect Businesses, Discovery Appearances, and operator-visible Workflow Failures.
+The first runnable slice provides:
 
-```sh
+- simple `.env`-configured Operator Authentication
+- a protected Review Dashboard at `/dashboard`
+- a Settings / Config Readout that shows effective non-secret runtime configuration
+- a Postgres health check through `/healthz`
+- an Audit Trail table with a baseline event write path
+- Google Places Discovery Runs in `place_search` or `radius_search` mode
+- persisted Discovery Run metadata, Search Location, Discovery Limit, Prospect Businesses, Discovery Appearances, and operator-visible Workflow Failures
+
+### Local setup
+
+```bash
+cp .env.example .env
 npm install
-npm run typecheck
-npm run test
+npm run dev
 ```
 
-To use Postgres, set `DATABASE_URL` and run:
+For local development outside Docker, make sure `DATABASE_URL` points at a running Postgres instance.
 
-```sh
+Run the Prospect Registry migration before starting discovery:
+
+```bash
 npm run db:migrate
 ```
 
-To start the dashboard:
+### Docker Compose
 
-```sh
-GOOGLE_PLACES_API_KEY=... npm run dev
+```bash
+cp .env.example .env
+docker compose up --build
 ```
 
-If `DATABASE_URL` is not set, the dashboard uses in-memory persistence for local smoke testing.
+Then open `http://localhost:3000/login` and sign in with the configured `OPERATOR_USERNAME` and `OPERATOR_PASSWORD`.
+
+### Checks
+
+```bash
+npm run typecheck
+npm run test
+```
