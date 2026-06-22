@@ -1,19 +1,31 @@
 import express, { type Request, type Response } from "express";
+import { ZodError } from "zod";
 
 import type { AuditTrailGateway } from "../audit/auditTrail.js";
 import { buildOperatorSessionCookie, readOperatorSession, verifyOperatorCredentials } from "../auth/operatorSession.js";
 import { buildConfigReadout, type RuntimeConfiguration } from "../config/runtimeConfiguration.js";
+import { runDiscovery } from "../discovery/run-discovery.js";
+import { startDiscoveryRunSchema } from "../discovery/start-discovery-run-schema.js";
+import type { BusinessDiscoverySource, ProspectRegistry } from "../discovery/types.js";
 import { renderDashboardPage, renderLoginPage } from "./rendering.js";
 
 export type ReviewDashboardDependencies = {
   auditTrail: AuditTrailGateway;
   configuration: RuntimeConfiguration;
+  discoverySource?: BusinessDiscoverySource;
+  prospectRegistry?: ProspectRegistry;
 };
 
-export function createReviewDashboardApp({ auditTrail, configuration }: ReviewDashboardDependencies) {
+export function createReviewDashboardApp({
+  auditTrail,
+  configuration,
+  discoverySource,
+  prospectRegistry,
+}: ReviewDashboardDependencies) {
   const app = express();
 
   app.disable("x-powered-by");
+  app.use(express.json({ limit: "64kb" }));
   app.use(express.urlencoded({ extended: false }));
 
   app.get("/", (request, response) => {
@@ -58,6 +70,52 @@ export function createReviewDashboardApp({ auditTrail, configuration }: ReviewDa
     response
       .status(200)
       .send(renderDashboardPage({ auditEvents, configReadout: buildConfigReadout(configuration), database }));
+  });
+
+  app.get("/api/discovery-runs", requireOperator(configuration), async (_request, response) => {
+    if (!prospectRegistry) {
+      response.status(503).json({ error: "Prospect registry is not configured." });
+      return;
+    }
+
+    response.status(200).json({ discoveryRuns: await prospectRegistry.listDiscoveryRuns() });
+  });
+
+  app.get("/api/discovery-runs/:id", requireOperator(configuration), async (request, response) => {
+    if (!prospectRegistry) {
+      response.status(503).json({ error: "Prospect registry is not configured." });
+      return;
+    }
+
+    response.status(200).json({
+      discoveryRun: await prospectRegistry.getDiscoveryRunDetail(request.params.id),
+    });
+  });
+
+  app.post("/api/discovery-runs", requireOperator(configuration), async (request, response) => {
+    if (!prospectRegistry || !discoverySource) {
+      response.status(503).json({ error: "Google Places discovery is not configured." });
+      return;
+    }
+
+    try {
+      const discoveryRun = await runDiscovery({
+        request: startDiscoveryRunSchema.parse(request.body),
+        discoverySource,
+        registry: prospectRegistry,
+      });
+
+      response.status(201).json({ discoveryRun });
+    } catch (error) {
+      if (error instanceof ZodError) {
+        response.status(400).json({
+          error: error.issues.map((issue) => issue.message).join("; "),
+        });
+        return;
+      }
+
+      throw error;
+    }
   });
 
   app.post("/audit-trail/baseline", requireOperator(configuration), async (_request, response) => {

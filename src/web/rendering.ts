@@ -74,7 +74,149 @@ export function renderDashboardPage(input: {
               : `<p class="empty-state">No audit events recorded yet.</p>`
           }
         </section>
+        <section class="panel discovery-panel" aria-labelledby="discovery-title">
+          <div class="section-heading">
+            <h2 id="discovery-title">Discovery Runs</h2>
+          </div>
+          <form id="discovery-form" class="discovery-form">
+            <label class="wide-field">
+              <span>Search location</span>
+              <input name="label" required placeholder="Beacon, NY" />
+            </label>
+            <label>
+              <span>Mode</span>
+              <select name="mode">
+                <option value="place_search">Place search</option>
+                <option value="radius_search">Radius search</option>
+              </select>
+            </label>
+            <label class="wide-field">
+              <span>Category or search term</span>
+              <input name="searchTerm" required placeholder="coffee shop" />
+            </label>
+            <label>
+              <span>Discovery limit</span>
+              <input name="discoveryLimit" type="number" min="1" max="60" value="10" required />
+            </label>
+            <label>
+              <span>Latitude</span>
+              <input name="latitude" type="number" step="any" placeholder="41.5048" />
+            </label>
+            <label>
+              <span>Longitude</span>
+              <input name="longitude" type="number" step="any" placeholder="-73.9696" />
+            </label>
+            <label>
+              <span>Radius metres</span>
+              <input name="radiusMeters" type="number" min="1" step="1" placeholder="2500" />
+            </label>
+            <button type="submit">Start Discovery Run</button>
+            <div id="discovery-message" class="form-message" role="status"></div>
+          </form>
+          <div id="discovery-runs" class="discovery-runs">Loading Discovery Runs...</div>
+        </section>
       </main>
+      <script>
+        const discoveryForm = document.querySelector("#discovery-form");
+        const discoveryRuns = document.querySelector("#discovery-runs");
+        const discoveryMessage = document.querySelector("#discovery-message");
+
+        function optionalNumber(formData, name) {
+          const value = formData.get(name);
+          return value === null || value === "" ? undefined : Number(value);
+        }
+
+        function clientEscapeHtml(value) {
+          return String(value ?? "").replace(/[&<>"']/g, (char) => ({
+            "&": "&amp;",
+            "<": "&lt;",
+            ">": "&gt;",
+            '"': "&quot;",
+            "'": "&#039;",
+          })[char]);
+        }
+
+        async function loadDiscoveryRuns() {
+          const response = await fetch("/api/discovery-runs");
+          const payload = await response.json();
+          if (!response.ok) {
+            throw new Error(payload.error || "Discovery Runs unavailable");
+          }
+          discoveryRuns.innerHTML = payload.discoveryRuns.map(renderDiscoveryRun).join("") || "<p class=\\"empty-state\\">No Discovery Runs yet.</p>";
+        }
+
+        function renderDiscoveryRun(run) {
+          const prospects = run.discoveredProspects.map((prospect) => \`
+            <tr>
+              <td>\${clientEscapeHtml(prospect.name)}</td>
+              <td>\${clientEscapeHtml(prospect.formattedAddress)}</td>
+              <td>\${clientEscapeHtml(prospect.websiteUrl || "")}</td>
+              <td>\${clientEscapeHtml(prospect.prospectStatus)}</td>
+            </tr>
+          \`).join("");
+          const failures = run.workflowFailures.map((failure) => \`
+            <p class="failure">\${clientEscapeHtml(failure.failedStep)}: \${clientEscapeHtml(failure.errorSummary)}</p>
+          \`).join("");
+          return \`
+            <article class="discovery-run">
+              <div class="run-header">
+                <strong>\${clientEscapeHtml(run.searchTerm)} in \${clientEscapeHtml(run.searchLocation.label)}</strong>
+                <span class="run-status \${run.status === "failed" ? "run-status-error" : ""}">\${clientEscapeHtml(run.status)}</span>
+              </div>
+              <dl class="run-metadata">
+                <div><dt>Mode</dt><dd>\${clientEscapeHtml(run.mode)}</dd></div>
+                <div><dt>Discovery limit</dt><dd>\${clientEscapeHtml(run.discoveryLimit)}</dd></div>
+                <div><dt>Result metadata</dt><dd><code>\${clientEscapeHtml(JSON.stringify(run.resultMetadata))}</code></dd></div>
+              </dl>
+              <table>
+                <thead><tr><th>Prospect Business</th><th>Address</th><th>Website</th><th>Status</th></tr></thead>
+                <tbody>\${prospects || "<tr><td colspan=\\"4\\">No prospects recorded.</td></tr>"}</tbody>
+              </table>
+              \${failures}
+            </article>
+          \`;
+        }
+
+        discoveryForm?.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const submit = discoveryForm.querySelector("button");
+          submit.disabled = true;
+          discoveryMessage.textContent = "Starting Discovery Run...";
+          const formData = new FormData(discoveryForm);
+          const body = {
+            mode: formData.get("mode"),
+            searchTerm: formData.get("searchTerm"),
+            discoveryLimit: Number(formData.get("discoveryLimit")),
+            searchLocation: {
+              label: formData.get("label"),
+              latitude: optionalNumber(formData, "latitude"),
+              longitude: optionalNumber(formData, "longitude"),
+              radiusMeters: optionalNumber(formData, "radiusMeters"),
+            },
+          };
+          try {
+            const response = await fetch("/api/discovery-runs", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(body),
+            });
+            const payload = await response.json();
+            if (!response.ok) {
+              throw new Error(payload.error || "Discovery Run failed");
+            }
+            discoveryMessage.textContent = "Discovery Run recorded.";
+            await loadDiscoveryRuns();
+          } catch (error) {
+            discoveryMessage.textContent = error instanceof Error ? error.message : "Discovery Run failed";
+          } finally {
+            submit.disabled = false;
+          }
+        });
+
+        loadDiscoveryRuns().catch((error) => {
+          discoveryRuns.innerHTML = \`<p class="empty-state">\${clientEscapeHtml(error.message)}</p>\`;
+        });
+      </script>
     `
   });
 }
@@ -175,6 +317,14 @@ function renderPage(input: { title: string; body: string }): string {
         min-height: 44px;
         border: 1px solid #b8c2cf;
         border-radius: 6px;
+        padding: 10px 12px;
+      }
+
+      select {
+        min-height: 44px;
+        border: 1px solid #b8c2cf;
+        border-radius: 6px;
+        background: #ffffff;
         padding: 10px 12px;
       }
 
@@ -311,13 +461,104 @@ function renderPage(input: { title: string; body: string }): string {
         color: #5b6470;
       }
 
+      .discovery-panel {
+        grid-column: 1 / -1;
+      }
+
+      .discovery-form {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 14px;
+        align-items: end;
+      }
+
+      .wide-field {
+        grid-column: span 2;
+      }
+
+      .form-message {
+        min-height: 24px;
+        color: #5b6470;
+        font-weight: 700;
+      }
+
+      .discovery-runs {
+        display: grid;
+        gap: 14px;
+        margin-top: 20px;
+      }
+
+      .discovery-run {
+        border: 1px solid #e0e5eb;
+        border-radius: 8px;
+        background: #fbfcfd;
+        padding: 16px;
+      }
+
+      .run-header {
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 12px;
+      }
+
+      .run-status {
+        border-radius: 999px;
+        background: #e6f5ee;
+        color: #0f5d48;
+        padding: 3px 9px;
+        font-size: 0.8rem;
+        font-weight: 750;
+        text-transform: uppercase;
+      }
+
+      .run-status-error,
+      .failure {
+        color: #9b1c1c;
+      }
+
+      .run-metadata {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+        margin: 0 0 14px;
+      }
+
+      .run-metadata div {
+        display: grid;
+        gap: 4px;
+        padding: 0;
+        border: 0;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.9rem;
+      }
+
+      th,
+      td {
+        border-top: 1px solid #e0e5eb;
+        padding: 8px 6px;
+        text-align: left;
+        vertical-align: top;
+      }
+
       @media (max-width: 840px) {
         .topbar,
         .section-heading,
         .dashboard-grid,
-        .config-list div {
+        .config-list div,
+        .discovery-form,
+        .run-header,
+        .run-metadata {
           display: grid;
           grid-template-columns: 1fr;
+        }
+
+        .wide-field {
+          grid-column: auto;
         }
 
         .dashboard-grid {

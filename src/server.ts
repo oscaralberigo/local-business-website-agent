@@ -5,16 +5,27 @@ import { ZodError } from "zod";
 import { PostgresAuditTrailGateway } from "./audit/postgresAuditTrail.js";
 import { loadRuntimeConfiguration } from "./config/runtimeConfiguration.js";
 import { createPostgresPool } from "./database/postgresPool.js";
+import { GooglePlacesDiscoverySource } from "./google-places/google-places-discovery-source.js";
+import { PostgresProspectRegistry } from "./persistence/postgres-prospect-registry.js";
 import { createReviewDashboardApp } from "./web/app.js";
 
 async function main(): Promise<void> {
   const configuration = loadRuntimeConfiguration(process.env);
   const pool = createPostgresPool(configuration);
   const auditTrail = new PostgresAuditTrailGateway(pool);
+  const prospectRegistry = new PostgresProspectRegistry(pool);
+  const discoverySource = configuration.googlePlacesApiKey
+    ? new GooglePlacesDiscoverySource({ apiKey: configuration.googlePlacesApiKey })
+    : undefined;
 
   await auditTrail.initialize();
 
-  const app = createReviewDashboardApp({ auditTrail, configuration });
+  const app = createReviewDashboardApp({
+    auditTrail,
+    configuration,
+    discoverySource,
+    prospectRegistry,
+  });
   const server = app.listen(configuration.port, () => {
     console.log(`Review Dashboard listening on port ${configuration.port}`);
   });

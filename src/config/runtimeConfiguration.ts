@@ -64,6 +64,7 @@ export type RuntimeConfiguration = {
   operatorSessionSecret: string;
   databaseUrl: string;
   databaseSsl: boolean;
+  googlePlacesApiKey?: string;
   providers: {
     googlePlacesConfigured: boolean;
     openAiConfigured: boolean;
@@ -94,6 +95,7 @@ export function loadRuntimeConfiguration(environment: NodeJS.ProcessEnv): Runtim
     operatorSessionSecret: parsed.OPERATOR_SESSION_SECRET,
     databaseUrl: parsed.DATABASE_URL,
     databaseSsl: parsed.DATABASE_SSL,
+    googlePlacesApiKey: parsed.GOOGLE_PLACES_API_KEY,
     providers: {
       googlePlacesConfigured: Boolean(parsed.GOOGLE_PLACES_API_KEY),
       openAiConfigured: Boolean(parsed.OPENAI_API_KEY),

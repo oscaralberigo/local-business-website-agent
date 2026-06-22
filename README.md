@@ -18,6 +18,8 @@ The first runnable slice provides:
 - a Settings / Config Readout that shows effective non-secret runtime configuration
 - a Postgres health check through `/healthz`
 - an Audit Trail table with a baseline event write path
+- Google Places Discovery Runs in `place_search` or `radius_search` mode
+- persisted Discovery Run metadata, Search Location, Discovery Limit, Prospect Businesses, Discovery Appearances, and operator-visible Workflow Failures
 
 ### Local setup
 
@@ -28,6 +30,12 @@ npm run dev
 ```
 
 For local development outside Docker, make sure `DATABASE_URL` points at a running Postgres instance.
+
+Run the Prospect Registry migration before starting discovery:
+
+```bash
+npm run db:migrate
+```
 
 ### Docker Compose
 
