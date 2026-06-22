@@ -9,6 +9,10 @@ import { loadRuntimeConfiguration } from "./config/runtimeConfiguration.js";
 import { createPostgresPool } from "./database/postgresPool.js";
 import { GooglePlacesDiscoverySource } from "./google-places/google-places-discovery-source.js";
 import { PostgresProspectRegistry } from "./persistence/postgres-prospect-registry.js";
+import { FileSystemPreviewArtifactStore } from "./preview-generation/file-system-preview-artifact-store.js";
+import { createWebsiteBuilderAgent } from "./preview-generation/website-builder-agent.js";
+import { createWebsiteDesignerAgent } from "./preview-generation/website-designer-agent.js";
+import { FileSystemPreviewHost } from "./preview-publication/file-system-preview-host.js";
 import { createReviewDashboardApp } from "./web/app.js";
 import { createWebsiteReviewerAgent } from "./website-assessment/website-reviewer-agent.js";
 
@@ -23,6 +27,14 @@ async function main(): Promise<void> {
   const businessContextResearcher = createBusinessContextResearcher({
     researchTools: [createGooglePlacesBusinessContextTool()],
   });
+  const previewArtifactStore = new FileSystemPreviewArtifactStore({
+    rootDirectory: configuration.previewArtifactRoot,
+  });
+  const previewHost = new FileSystemPreviewHost({
+    rootDirectory: configuration.previewArtifactRoot,
+  });
+  const websiteBuilderAgent = createWebsiteBuilderAgent();
+  const websiteDesignerAgent = createWebsiteDesignerAgent();
   const websiteReviewerAgent = createWebsiteReviewerAgent();
 
   await auditTrail.initialize();
@@ -33,6 +45,10 @@ async function main(): Promise<void> {
     discoverySource,
     businessContextResearcher,
     prospectRegistry,
+    previewArtifactStore,
+    previewHost,
+    websiteBuilderAgent,
+    websiteDesignerAgent,
     websiteReviewerAgent,
   });
   const server = app.listen(configuration.port, () => {

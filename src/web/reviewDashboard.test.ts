@@ -6,6 +6,7 @@ import type { ContactFinderAgent } from "../contact-finder/types.js";
 import { loadRuntimeConfiguration } from "../config/runtimeConfiguration.js";
 import type {
   PreviewArtifactStore,
+  PreviewWebsite,
   WebsiteBuilderAgent,
   WebsiteDesignerAgent,
 } from "../preview-generation/types.js";
@@ -1142,6 +1143,9 @@ describe("Review Dashboard bootstrap slice", () => {
     );
     expect(dashboard.text).not.toContain('replace(/^dist\\\\//, "")');
     expect(dashboard.text).toContain("operator-edit-form");
+    expect(dashboard.text).toContain("preview-publication-form");
+    expect(dashboard.text).toContain("Preview Approval reason");
+    expect(dashboard.text).toContain("Publish Preview");
 
     const detailResponse = await operator.get("/api/prospect-businesses/prospect-1").expect(200);
     expect(detailResponse.body.prospectBusiness.previewWebsite).toMatchObject({
@@ -1186,6 +1190,197 @@ describe("Review Dashboard bootstrap slice", () => {
       },
     });
   });
+
+  it("lets the operator approve and publish a compliant Preview Website to an unguessable noindex Preview URL", async () => {
+    const configuration = loadRuntimeConfiguration(baseConfiguration);
+    const auditTrail = createAuditTrailStub();
+    const previewWebsite = previewWebsiteReadyForReview();
+    const prospectBusiness = {
+      ...prospectBusinessWithPreview(previewWebsite),
+      businessContext: {
+        prospectBusinessId: "prospect-1",
+        researchMode: "expanded" as const,
+        sources: [],
+        facts: [],
+        excludedResearchData: [],
+        supportedClaims: [
+          {
+            id: "claim-1",
+            prospectBusinessId: "prospect-1",
+            statement: "Detail Cafe serves house-roasted coffee.",
+            evidence: [{ sourceId: "source-1", factId: "fact-1" }],
+            allowedForGeneration: true,
+          },
+        ],
+      },
+      websiteAssessment: {
+        id: "assessment-1",
+        prospectBusinessId: "prospect-1",
+        deterministicChecks: {
+          pageLoad: "reachable" as const,
+          https: "valid" as const,
+          mobileViewport: "rendered" as const,
+          contactInformationFound: true,
+          servicesFound: true,
+          brokenAssetsOrConsoleErrors: false,
+          thirdPartyOnlyPresence: false,
+        },
+        opportunityCategory: "outdated_or_low_quality" as const,
+        confidence: 0.82,
+        summary: "The current website is hard to scan on mobile.",
+        evidence: [],
+        recommendedPitchAngle: "modern_upgrade" as const,
+        safeClaims: [],
+        reviewNotes: [],
+        previewEligibility: {
+          eligibleByDefault: true,
+          effectiveEligible: true,
+          requiresOperatorReview: false,
+          overriddenByOperator: false,
+          reason: "This Opportunity Category is preview-eligible by default.",
+        },
+        assessedAt: new Date("2026-06-22T18:00:00.000Z"),
+      },
+    };
+    const publication = {
+      previewUrl: "https://previews.example.com/published-previews/6d4a8a4b9de2484da8e04dd3/",
+      previewUrlPath: "/published-previews/6d4a8a4b9de2484da8e04dd3/",
+      deploymentId: "preview-deployment-1",
+      buildId: "npm-run-build-previews",
+      noindex: true,
+      publishedAt: new Date("2026-06-22T20:00:00.000Z"),
+      approvedBy: "operator",
+      approvalReason: "Preview copy and supported claims are ready.",
+    };
+    const publishedPreviewWebsite = {
+      ...previewWebsite,
+      status: "published" as const,
+      publication,
+    };
+    const prospectRegistry = {
+      createDiscoveryRun: vi.fn(),
+      recordDiscoveredProspect: vi.fn(),
+      completeDiscoveryRun: vi.fn(),
+      failDiscoveryRun: vi.fn(),
+      getDiscoveryRunDetail: vi.fn(),
+      listDiscoveryRuns: vi.fn(async () => []),
+      getProspectBusinessDetail: vi.fn(async () => prospectBusiness),
+      publishPreviewWebsite: vi.fn(async () => publishedPreviewWebsite),
+    };
+    const previewHost = {
+      publish: vi.fn(async () => publication),
+      unpublish: vi.fn(),
+    };
+
+    const app = createReviewDashboardApp({ auditTrail, configuration, prospectRegistry, previewHost });
+    const operator = request.agent(app);
+
+    await operator
+      .post("/login")
+      .type("form")
+      .send({ username: "operator", password: baseConfiguration.OPERATOR_PASSWORD })
+      .expect(302);
+
+    const response = await operator
+      .post("/api/prospect-businesses/prospect-1/preview-website/publication")
+      .send({ approvalReason: "Preview copy and supported claims are ready." })
+      .expect(200);
+
+    expect(previewHost.publish).toHaveBeenCalledWith({
+      previewWebsite,
+      previewBaseUrl: "https://previews.example.com",
+    });
+    expect(prospectRegistry.publishPreviewWebsite).toHaveBeenCalledWith({
+      prospectBusinessId: "prospect-1",
+      actor: "operator",
+      approvalReason: "Preview copy and supported claims are ready.",
+      publication,
+    });
+    expect(response.body.previewWebsite).toMatchObject({
+      status: "published",
+      publication: {
+        previewUrl: "https://previews.example.com/published-previews/6d4a8a4b9de2484da8e04dd3/",
+        previewUrlPath: "/published-previews/6d4a8a4b9de2484da8e04dd3/",
+        deploymentId: "preview-deployment-1",
+        buildId: "npm-run-build-previews",
+        noindex: true,
+        approvedBy: "operator",
+        approvalReason: "Preview copy and supported claims are ready.",
+      },
+    });
+    expect(response.body.previewWebsite.publication.previewUrl).toMatch(
+      /^https:\/\/previews\.example\.com\/published-previews\/[a-f0-9]{24}\/$/,
+    );
+  });
+
+  it("lets the operator unpublish a Published Preview so its Preview URL is no longer active", async () => {
+    const configuration = loadRuntimeConfiguration(baseConfiguration);
+    const auditTrail = createAuditTrailStub();
+    const publication = {
+      previewUrl: "https://previews.example.com/published-previews/6d4a8a4b9de2484da8e04dd3/",
+      previewUrlPath: "/published-previews/6d4a8a4b9de2484da8e04dd3/",
+      deploymentId: "preview-deployment-1",
+      buildId: "npm-run-build-previews",
+      noindex: true,
+      publishedAt: new Date("2026-06-22T20:00:00.000Z"),
+      approvedBy: "operator",
+      approvalReason: "Preview copy and supported claims are ready.",
+    };
+    const previewWebsite = {
+      ...previewWebsiteReadyForReview(),
+      status: "published" as const,
+      publication,
+    };
+    const unpublishedPreviewWebsite = {
+      ...previewWebsite,
+      status: "ready_for_review" as const,
+      publication: {
+        ...publication,
+        unpublishedAt: new Date("2026-06-22T20:30:00.000Z"),
+        unpublishedBy: "operator",
+      },
+    };
+    const prospectRegistry = {
+      createDiscoveryRun: vi.fn(),
+      recordDiscoveredProspect: vi.fn(),
+      completeDiscoveryRun: vi.fn(),
+      failDiscoveryRun: vi.fn(),
+      getDiscoveryRunDetail: vi.fn(),
+      listDiscoveryRuns: vi.fn(async () => []),
+      getProspectBusinessDetail: vi.fn(async () => prospectBusinessWithPreview(previewWebsite)),
+      unpublishPreviewWebsite: vi.fn(async () => unpublishedPreviewWebsite),
+    };
+    const previewHost = {
+      publish: vi.fn(),
+      unpublish: vi.fn(async () => undefined),
+    };
+
+    const app = createReviewDashboardApp({ auditTrail, configuration, prospectRegistry, previewHost });
+    const operator = request.agent(app);
+
+    await operator
+      .post("/login")
+      .type("form")
+      .send({ username: "operator", password: baseConfiguration.OPERATOR_PASSWORD })
+      .expect(302);
+
+    const response = await operator
+      .delete("/api/prospect-businesses/prospect-1/preview-website/publication")
+      .expect(200);
+
+    expect(previewHost.unpublish).toHaveBeenCalledWith({ previewUrlPath: publication.previewUrlPath });
+    expect(prospectRegistry.unpublishPreviewWebsite).toHaveBeenCalledWith({
+      prospectBusinessId: "prospect-1",
+      actor: "operator",
+    });
+    expect(response.body.previewWebsite).toMatchObject({
+      status: "ready_for_review",
+      publication: {
+        previewUrlPath: "/published-previews/6d4a8a4b9de2484da8e04dd3/",
+        unpublishedBy: "operator",
+      },
+    });
+  });
 });
 
 function createAuditTrailStub() {
@@ -1207,5 +1402,86 @@ function discoveryRunStub(id: string) {
     status: "completed" as const,
     queryMetadata: {},
     resultMetadata: {},
+  };
+}
+
+function previewWebsiteReadyForReview() {
+  return {
+    id: "preview-1",
+    prospectBusinessId: "prospect-1",
+    slug: "detail-cafe-prospect-1",
+    status: "ready_for_review" as const,
+    designPlan: {
+      siteType: "multi_section" as const,
+      primaryGoal: "menu_view" as const,
+      targetCustomer: "People in Beacon looking for coffee before visiting.",
+      pitchAngle: "modern_upgrade" as const,
+      sections: [
+        {
+          id: "hero",
+          title: "House-roasted coffee in Beacon",
+          purpose: "Lead with the supported cafe specialty and location.",
+          requiredEvidence: ["Detail Cafe serves house-roasted coffee."],
+          contentGuidance: "Use the supported claim as the hero message.",
+        },
+      ],
+      navigation: {
+        style: "prominent_cta" as const,
+        items: ["Home", "Menu", "Visit"],
+      },
+      features: [],
+      avoid: ["Do not invent prices, hours, reviews, or awards."],
+      operatorReviewNotes: ["Confirm the menu link still works before publication."],
+    },
+    contentJson: {
+      hero: {
+        headline: "House-roasted coffee in Beacon",
+        body: "Detail Cafe serves house-roasted coffee.",
+      },
+    },
+    sourceReferences: [
+      {
+        sourceId: "source-1",
+        factId: "fact-1",
+        statement: "Detail Cafe serves house-roasted coffee.",
+      },
+    ],
+    buildMetadata: {
+      builder: "svelte" as const,
+      command: "npm run build:previews",
+      status: "built" as const,
+    },
+    artifact: {
+      sourceRoot: "detail-cafe-prospect-1/source",
+      staticRoot: "detail-cafe-prospect-1/dist",
+      entryFile: "src/App.svelte",
+      indexFile: "dist/index.html",
+    },
+    operatorEditableFields: [
+      {
+        path: "contentJson.hero.headline",
+        label: "Hero headline",
+        value: "House-roasted coffee in Beacon",
+      },
+    ],
+    createdAt: new Date("2026-06-22T19:00:00.000Z"),
+    updatedAt: new Date("2026-06-22T19:00:00.000Z"),
+  };
+}
+
+function prospectBusinessWithPreview(previewWebsite: PreviewWebsite) {
+  return {
+    id: "prospect-1",
+    googlePlaceId: "places/detail-cafe",
+    name: "Detail Cafe",
+    categories: ["cafe"],
+    prospectStatus: "preview_ready_for_review" as const,
+    sourceData: { placeId: "places/detail-cafe" },
+    firstSeenAt: new Date("2026-06-20T10:00:00.000Z"),
+    lastSeenAt: new Date("2026-06-21T11:00:00.000Z"),
+    firstDiscoveredRun: discoveryRunStub("run-1"),
+    latestDiscoveredRun: discoveryRunStub("run-1"),
+    appearanceHistory: [],
+    previewWebsite,
   };
 }

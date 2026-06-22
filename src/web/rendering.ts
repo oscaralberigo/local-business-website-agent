@@ -242,6 +242,9 @@ export function renderDashboardPage(input: {
                 <div><dt>Slug</dt><dd>\${clientEscapeHtml(preview.slug)}</dd></div>
                 <div><dt>Primary goal</dt><dd>\${clientEscapeHtml(preview.designPlan.primaryGoal)}</dd></div>
                 <div><dt>Build status</dt><dd>\${clientEscapeHtml(preview.buildMetadata.status)}</dd></div>
+                \${preview.publication ? \`
+                  <div><dt>Preview URL</dt><dd><a href="\${clientEscapeHtml(preview.publication.previewUrl)}" rel="nofollow noopener" target="_blank">\${clientEscapeHtml(preview.publication.previewUrl)}</a></dd></div>
+                \` : ""}
               </dl>
               <h4>Source references</h4>
               \${preview.sourceReferences.length > 0
@@ -261,6 +264,21 @@ export function renderDashboardPage(input: {
                 <button type="submit">Save Preview Edits</button>
                 <div class="form-message" role="status"></div>
               </form>
+              \${preview.status === "published" && preview.publication ? \`
+                <form class="preview-publication-form" data-preview-unpublication-form data-prospect-id="\${clientEscapeHtml(prospectBusiness.id)}">
+                  <button type="submit">Unpublish Preview</button>
+                  <div class="form-message" role="status"></div>
+                </form>
+              \` : \`
+                <form class="preview-publication-form" data-preview-publication-form data-prospect-id="\${clientEscapeHtml(prospectBusiness.id)}">
+                  <label>
+                    <span>Preview Approval reason</span>
+                    <textarea name="approvalReason" required></textarea>
+                  </label>
+                  <button type="submit">Publish Preview</button>
+                  <div class="form-message" role="status"></div>
+                </form>
+              \`}
             </section>
           \` : \`
             <section class="preview-website" aria-label="Preview Website">
@@ -393,6 +411,86 @@ export function renderDashboardPage(input: {
           } catch (error) {
             if (message) {
               message.textContent = error instanceof Error ? error.message : "Preview Website edits failed";
+            }
+          } finally {
+            if (submit instanceof HTMLButtonElement) {
+              submit.disabled = false;
+            }
+          }
+        });
+
+        discoveryRuns.addEventListener("submit", async (event) => {
+          const form = event.target instanceof Element ? event.target.closest("[data-preview-publication-form]") : null;
+          if (!(form instanceof HTMLFormElement)) {
+            return;
+          }
+
+          event.preventDefault();
+          const submit = form.querySelector("button");
+          const message = form.querySelector(".form-message");
+          if (submit instanceof HTMLButtonElement) {
+            submit.disabled = true;
+          }
+          if (message) {
+            message.textContent = "Publishing Preview Website...";
+          }
+
+          const formData = new FormData(form);
+          try {
+            const response = await fetch(\`/api/prospect-businesses/\${encodeURIComponent(form.dataset.prospectId || "")}/preview-website/publication\`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ approvalReason: String(formData.get("approvalReason") || "") }),
+            });
+            const payload = await response.json();
+            if (!response.ok) {
+              throw new Error(payload.error || "Preview Website publication failed");
+            }
+            if (message) {
+              message.textContent = "Preview Website published.";
+            }
+          } catch (error) {
+            if (message) {
+              message.textContent = error instanceof Error ? error.message : "Preview Website publication failed";
+            }
+          } finally {
+            if (submit instanceof HTMLButtonElement) {
+              submit.disabled = false;
+            }
+          }
+        });
+
+        discoveryRuns.addEventListener("submit", async (event) => {
+          const form = event.target instanceof Element ? event.target.closest("[data-preview-unpublication-form]") : null;
+          if (!(form instanceof HTMLFormElement)) {
+            return;
+          }
+
+          event.preventDefault();
+          const submit = form.querySelector("button");
+          const message = form.querySelector(".form-message");
+          if (submit instanceof HTMLButtonElement) {
+            submit.disabled = true;
+          }
+          if (message) {
+            message.textContent = "Unpublishing Preview Website...";
+          }
+
+          try {
+            const response = await fetch(\`/api/prospect-businesses/\${encodeURIComponent(form.dataset.prospectId || "")}/preview-website/publication\`, {
+              method: "DELETE",
+              headers: { "Content-Type": "application/json" },
+            });
+            const payload = await response.json();
+            if (!response.ok) {
+              throw new Error(payload.error || "Preview Website unpublication failed");
+            }
+            if (message) {
+              message.textContent = "Preview Website unpublished.";
+            }
+          } catch (error) {
+            if (message) {
+              message.textContent = error instanceof Error ? error.message : "Preview Website unpublication failed";
             }
           } finally {
             if (submit instanceof HTMLButtonElement) {

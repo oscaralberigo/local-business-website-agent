@@ -527,6 +527,68 @@ describe("Postgres Prospect Registry", () => {
       }),
     ).rejects.toThrow("not reviewable");
 
+    const publishedPreviewWebsite = await registry.publishPreviewWebsite({
+      prospectBusinessId,
+      actor: "operator",
+      approvalReason: "Preview copy and source references are ready.",
+      publication: {
+        previewUrl: "https://previews.example.com/published-previews/6d4a8a4b9de2484da8e04dd3/",
+        previewUrlPath: "/published-previews/6d4a8a4b9de2484da8e04dd3/",
+        deploymentId: "preview-deployment-1",
+        buildId: "npm-run-build-previews",
+        noindex: true,
+        publishedAt: new Date("2026-06-22T20:00:00.000Z"),
+        approvedBy: "operator",
+        approvalReason: "Preview copy and source references are ready.",
+      },
+    });
+
+    expect(publishedPreviewWebsite).toMatchObject({
+      status: "published",
+      publication: {
+        previewUrl: "https://previews.example.com/published-previews/6d4a8a4b9de2484da8e04dd3/",
+        deploymentId: "preview-deployment-1",
+        buildId: "npm-run-build-previews",
+        noindex: true,
+        approvedBy: "operator",
+      },
+    });
+    await expect(
+      registry.getProspectBusinessDetail(prospectBusinessId),
+    ).resolves.toMatchObject({
+      prospectStatus: "preview_published",
+      previewWebsite: {
+        status: "published",
+        publication: {
+          previewUrlPath: "/published-previews/6d4a8a4b9de2484da8e04dd3/",
+        },
+      },
+    });
+
+    const unpublishedPreviewWebsite = await registry.unpublishPreviewWebsite({
+      prospectBusinessId,
+      actor: "operator",
+    });
+
+    expect(unpublishedPreviewWebsite).toMatchObject({
+      status: "ready_for_review",
+      publication: {
+        previewUrlPath: "/published-previews/6d4a8a4b9de2484da8e04dd3/",
+        unpublishedBy: "operator",
+      },
+    });
+    await expect(
+      registry.getProspectBusinessDetail(prospectBusinessId),
+    ).resolves.toMatchObject({
+      prospectStatus: "preview_ready_for_review",
+      previewWebsite: {
+        status: "ready_for_review",
+        publication: {
+          unpublishedBy: "operator",
+        },
+      },
+    });
+
     await expectCount(pool, "preview_websites", prospectBusinessId, 1);
 
     await pool.end();
