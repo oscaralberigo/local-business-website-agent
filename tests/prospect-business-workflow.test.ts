@@ -171,7 +171,7 @@ describe("Prospect Business workflow", () => {
       }),
       currentWebsiteUrl: "https://detail.example",
       assessmentRunId: expect.any(String),
-      explorationBudget: expect.objectContaining({ maxPages: 1, maxScreenshots: 2 }),
+      explorationBudget: expect.objectContaining({ maxPages: 3, maxScreenshots: 6 }),
       reviewContextBudget: expect.objectContaining({ maxTextCharacters: expect.any(Number) }),
     });
     expect(websiteReviewerAgent.review).toHaveBeenCalledWith({

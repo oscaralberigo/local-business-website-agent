@@ -91,6 +91,24 @@ export type WebsiteExplorerAgent = {
 };
 
 export type WebsiteExplorationArtifactStore = {
+  writePageEvidence(input: {
+    prospectBusinessId: string;
+    assessmentRunId: string;
+    pageArtifactName: string;
+    pageUrl: string;
+    rawHtml: string;
+    reviewerReadyTextExcerpt: string;
+    desktopScreenshot: {
+      contents: Buffer;
+      capturedAt: Date;
+    };
+    mobileScreenshot: {
+      contents: Buffer;
+      capturedAt: Date;
+    };
+    deterministicChecks: WebsiteDeterministicChecks;
+    browserObservations: string[];
+  }): Promise<WebsiteExplorationEvidence>;
   writeLandingPageEvidence(input: {
     prospectBusinessId: string;
     assessmentRunId: string;

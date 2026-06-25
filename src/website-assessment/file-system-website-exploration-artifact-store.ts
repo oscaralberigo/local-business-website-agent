@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, normalize, relative } from "node:path";
 
 import type {
@@ -9,20 +9,21 @@ import type {
 export class FileSystemWebsiteExplorationArtifactStore implements WebsiteExplorationArtifactStore {
   constructor(private readonly options: { rootDirectory: string }) {}
 
-  async writeLandingPageEvidence(
-    input: Parameters<WebsiteExplorationArtifactStore["writeLandingPageEvidence"]>[0],
+  async writePageEvidence(
+    input: Parameters<WebsiteExplorationArtifactStore["writePageEvidence"]>[0],
   ): Promise<WebsiteExplorationEvidence> {
     assertSafeSegment(input.prospectBusinessId, "Prospect Business ID");
     assertSafeSegment(input.assessmentRunId, "Website Assessment run ID");
+    assertSafeSegment(input.pageArtifactName, "Website Exploration page artifact name");
 
     const runRoot = join(
       "website-assessments",
       input.prospectBusinessId,
       input.assessmentRunId,
     );
-    const htmlArtifactUri = join(runRoot, "pages", "landing.html");
-    const desktopScreenshotUri = join(runRoot, "screenshots", "landing-desktop.png");
-    const mobileScreenshotUri = join(runRoot, "screenshots", "landing-mobile.png");
+    const htmlArtifactUri = join(runRoot, "pages", `${input.pageArtifactName}.html`);
+    const desktopScreenshotUri = join(runRoot, "screenshots", `${input.pageArtifactName}-desktop.png`);
+    const mobileScreenshotUri = join(runRoot, "screenshots", `${input.pageArtifactName}-mobile.png`);
     const manifestUri = join(runRoot, "evidence-manifest.json");
     const evidence: WebsiteExplorationEvidence = {
       pageUrl: input.pageUrl,
@@ -43,12 +44,18 @@ export class FileSystemWebsiteExplorationArtifactStore implements WebsiteExplora
     await this.writeFileWithinRoot(htmlArtifactUri, input.rawHtml);
     await this.writeFileWithinRoot(desktopScreenshotUri, input.desktopScreenshot.contents);
     await this.writeFileWithinRoot(mobileScreenshotUri, input.mobileScreenshot.contents);
-    await this.writeFileWithinRoot(
-      manifestUri,
-      `${JSON.stringify({ evidence }, null, 2)}\n`,
-    );
+    await this.writeEvidenceManifest(manifestUri, evidence);
 
     return evidence;
+  }
+
+  async writeLandingPageEvidence(
+    input: Parameters<WebsiteExplorationArtifactStore["writeLandingPageEvidence"]>[0],
+  ): Promise<WebsiteExplorationEvidence> {
+    return this.writePageEvidence({
+      ...input,
+      pageArtifactName: "landing",
+    });
   }
 
   private async writeFileWithinRoot(relativePath: string, contents: string | Buffer): Promise<void> {
@@ -63,6 +70,40 @@ export class FileSystemWebsiteExplorationArtifactStore implements WebsiteExplora
 
     await mkdir(dirname(absoluteFile), { recursive: true });
     await writeFile(absoluteFile, contents);
+  }
+
+  private async writeEvidenceManifest(
+    relativePath: string,
+    evidence: WebsiteExplorationEvidence,
+  ): Promise<void> {
+    assertSafeRelativePath(relativePath);
+
+    const absoluteFile = join(this.options.rootDirectory, relativePath);
+    const existingEvidence = await readExistingManifestEvidence(absoluteFile);
+    const nextEvidence = [
+      ...existingEvidence.filter((entry) => entry.pageUrl !== evidence.pageUrl),
+      evidence,
+    ];
+
+    await mkdir(dirname(absoluteFile), { recursive: true });
+    await writeFile(absoluteFile, `${JSON.stringify({ evidence: nextEvidence }, null, 2)}\n`);
+  }
+}
+
+async function readExistingManifestEvidence(absoluteFile: string): Promise<WebsiteExplorationEvidence[]> {
+  try {
+    const manifest = JSON.parse(await readFile(absoluteFile, "utf8")) as {
+      evidence?: WebsiteExplorationEvidence | WebsiteExplorationEvidence[];
+    };
+    if (Array.isArray(manifest.evidence)) {
+      return manifest.evidence;
+    }
+    return manifest.evidence ? [manifest.evidence] : [];
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      return [];
+    }
+    throw error;
   }
 }
 
