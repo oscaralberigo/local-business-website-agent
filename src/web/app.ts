@@ -49,6 +49,7 @@ import { assessWebsiteOpportunity } from "../website-assessment/assess-website-o
 import type {
   WebsiteAssessmentInput,
   WebsiteAssessmentStore,
+  WebsiteExplorerAgent,
   WebsiteReviewerAgent,
   WebsiteScreenshotInput,
 } from "../website-assessment/types.js";
@@ -79,6 +80,7 @@ export type ReviewDashboardDependencies = {
   previewHost?: PreviewHost;
   websiteBuilderAgent?: WebsiteBuilderAgent;
   websiteDesignerAgent?: WebsiteDesignerAgent;
+  websiteExplorerAgent?: WebsiteExplorerAgent;
   websiteReviewerAgent?: WebsiteReviewerAgent;
 };
 
@@ -95,6 +97,7 @@ export function createReviewDashboardApp({
   previewHost,
   websiteBuilderAgent,
   websiteDesignerAgent,
+  websiteExplorerAgent,
   websiteReviewerAgent,
 }: ReviewDashboardDependencies) {
   const app = express();
@@ -360,6 +363,7 @@ export function createReviewDashboardApp({
       const prospectBusiness = await prospectRegistry.getProspectBusinessDetail(request.params.id);
       const websiteAssessment = await assessWebsiteOpportunity({
         prospectBusiness,
+        websiteExplorerAgent,
         reviewerAgent: websiteReviewerAgent,
         assessmentStore: prospectRegistry as ProspectRegistry & WebsiteAssessmentStore,
         input: websiteAssessmentInputFromBody(request.body),

@@ -169,6 +169,7 @@ create table if not exists website_assessments (
   deterministic_checks jsonb not null,
   desktop_screenshot jsonb,
   mobile_screenshot jsonb,
+  website_exploration_evidence jsonb,
   opportunity_category text not null check (
     opportunity_category in (
       'no_website',
@@ -247,6 +248,9 @@ create unique index if not exists preview_websites_latest_per_prospect
 
 alter table preview_websites
   add column if not exists publication jsonb;
+
+alter table website_assessments
+  add column if not exists website_exploration_evidence jsonb;
 
 create table if not exists draft_outreach (
   id uuid primary key,

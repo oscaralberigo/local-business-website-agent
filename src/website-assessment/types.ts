@@ -49,7 +49,65 @@ export type WebsiteAssessmentInput = {
   deterministicChecks: WebsiteDeterministicChecks;
   desktopScreenshot?: WebsiteScreenshotInput;
   mobileScreenshot?: WebsiteScreenshotInput;
+  websiteExplorationEvidence?: WebsiteExplorationEvidence[];
   operatorNotes?: string[];
+};
+
+export type WebsiteExplorationEvidence = {
+  pageUrl: string;
+  htmlArtifactUri: string;
+  reviewerReadyTextExcerpt: string;
+  desktopScreenshot: WebsiteScreenshotInput;
+  mobileScreenshot: WebsiteScreenshotInput;
+  deterministicChecks: WebsiteDeterministicChecks;
+  browserObservations: string[];
+};
+
+export type ExplorationBudget = {
+  maxPages: number;
+  maxScreenshots: number;
+  timeoutMs: number;
+  allowedDomains: string[];
+  forbiddenActions: string[];
+};
+
+export type ReviewContextBudget = {
+  maxTextCharacters: number;
+};
+
+export type WebsiteExplorerOutput = {
+  evidence: WebsiteExplorationEvidence[];
+  reviewContext: WebsiteAssessmentInput;
+};
+
+export type WebsiteExplorerAgent = {
+  explore(input: {
+    prospectBusiness: ProspectBusinessDetail | ProspectBusiness;
+    currentWebsiteUrl: string;
+    assessmentRunId: string;
+    explorationBudget: ExplorationBudget;
+    reviewContextBudget: ReviewContextBudget;
+  }): Promise<WebsiteExplorerOutput>;
+};
+
+export type WebsiteExplorationArtifactStore = {
+  writeLandingPageEvidence(input: {
+    prospectBusinessId: string;
+    assessmentRunId: string;
+    pageUrl: string;
+    rawHtml: string;
+    reviewerReadyTextExcerpt: string;
+    desktopScreenshot: {
+      contents: Buffer;
+      capturedAt: Date;
+    };
+    mobileScreenshot: {
+      contents: Buffer;
+      capturedAt: Date;
+    };
+    deterministicChecks: WebsiteDeterministicChecks;
+    browserObservations: string[];
+  }): Promise<WebsiteExplorationEvidence>;
 };
 
 export type WebsiteReviewerOutput = {
@@ -93,6 +151,7 @@ export type WebsiteAssessment = {
   deterministicChecks: WebsiteDeterministicChecks;
   desktopScreenshot?: WebsiteScreenshotInput;
   mobileScreenshot?: WebsiteScreenshotInput;
+  websiteExplorationEvidence?: WebsiteExplorationEvidence[];
   opportunityCategory: OpportunityCategory;
   confidence: number;
   summary: string;

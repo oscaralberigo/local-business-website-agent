@@ -75,6 +75,7 @@ import type {
   WebsiteAssessmentEvidence,
   WebsiteAssessmentStore,
   WebsiteDeterministicChecks,
+  WebsiteExplorationEvidence,
   WebsiteScreenshotInput,
 } from "../website-assessment/types.js";
 
@@ -835,6 +836,7 @@ export class PostgresProspectRegistry
       deterministicChecks: input.input.deterministicChecks,
       desktopScreenshot: input.input.desktopScreenshot,
       mobileScreenshot: input.input.mobileScreenshot,
+      websiteExplorationEvidence: input.input.websiteExplorationEvidence,
       opportunityCategory: input.reviewerOutput.opportunityCategory,
       confidence: input.reviewerOutput.confidence,
       summary: input.reviewerOutput.summary,
@@ -862,6 +864,7 @@ export class PostgresProspectRegistry
             deterministic_checks,
             desktop_screenshot,
             mobile_screenshot,
+            website_exploration_evidence,
             opportunity_category,
             confidence,
             summary,
@@ -872,13 +875,14 @@ export class PostgresProspectRegistry
             preview_eligibility,
             assessed_at
           )
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
          on conflict (prospect_business_id) do update
          set current_website_url = excluded.current_website_url,
              html_text = excluded.html_text,
              deterministic_checks = excluded.deterministic_checks,
              desktop_screenshot = excluded.desktop_screenshot,
              mobile_screenshot = excluded.mobile_screenshot,
+             website_exploration_evidence = excluded.website_exploration_evidence,
              opportunity_category = excluded.opportunity_category,
              confidence = excluded.confidence,
              summary = excluded.summary,
@@ -896,6 +900,7 @@ export class PostgresProspectRegistry
           JSON.stringify(websiteAssessment.deterministicChecks),
           optionalJson(websiteAssessment.desktopScreenshot),
           optionalJson(websiteAssessment.mobileScreenshot),
+          optionalJson(websiteAssessment.websiteExplorationEvidence),
           websiteAssessment.opportunityCategory,
           websiteAssessment.confidence,
           websiteAssessment.summary,
@@ -1813,6 +1818,7 @@ function mapWebsiteAssessmentRow(row: {
   deterministic_checks: WebsiteDeterministicChecks;
   desktop_screenshot?: WebsiteScreenshotInput | SerializedWebsiteScreenshotInput;
   mobile_screenshot?: WebsiteScreenshotInput | SerializedWebsiteScreenshotInput;
+  website_exploration_evidence?: WebsiteExplorationEvidence[];
   opportunity_category: WebsiteAssessment["opportunityCategory"];
   confidence: number;
   summary: string;
@@ -1833,6 +1839,9 @@ function mapWebsiteAssessmentRow(row: {
   const previewEligibility = parseJsonb<PreviewEligibility | SerializedPreviewEligibility>(
     row.preview_eligibility,
   );
+  const websiteExplorationEvidence = parseJsonb<WebsiteExplorationEvidence[] | undefined>(
+    row.website_exploration_evidence,
+  );
 
   return {
     id: row.id,
@@ -1842,6 +1851,7 @@ function mapWebsiteAssessmentRow(row: {
     deterministicChecks,
     desktopScreenshot: deserializeScreenshot(desktopScreenshot),
     mobileScreenshot: deserializeScreenshot(mobileScreenshot),
+    websiteExplorationEvidence: websiteExplorationEvidence?.map(deserializeWebsiteExplorationEvidence),
     opportunityCategory: row.opportunity_category,
     confidence: row.confidence,
     summary: row.summary,
@@ -1982,6 +1992,14 @@ type SerializedWebsiteScreenshotInput = Omit<WebsiteScreenshotInput, "capturedAt
   capturedAt: string;
 };
 
+type SerializedWebsiteExplorationEvidence = Omit<
+  WebsiteExplorationEvidence,
+  "desktopScreenshot" | "mobileScreenshot"
+> & {
+  desktopScreenshot: WebsiteScreenshotInput | SerializedWebsiteScreenshotInput;
+  mobileScreenshot: WebsiteScreenshotInput | SerializedWebsiteScreenshotInput;
+};
+
 type SerializedPreviewEligibility = Omit<PreviewEligibility, "override"> & {
   override?: Omit<NonNullable<PreviewEligibility["override"]>, "overriddenAt"> & {
     overriddenAt: string;
@@ -2009,6 +2027,16 @@ function deserializeScreenshot(
       screenshot.capturedAt instanceof Date
         ? screenshot.capturedAt
         : new Date(screenshot.capturedAt),
+  };
+}
+
+function deserializeWebsiteExplorationEvidence(
+  evidence: WebsiteExplorationEvidence | SerializedWebsiteExplorationEvidence,
+): WebsiteExplorationEvidence {
+  return {
+    ...evidence,
+    desktopScreenshot: deserializeScreenshot(evidence.desktopScreenshot)!,
+    mobileScreenshot: deserializeScreenshot(evidence.mobileScreenshot)!,
   };
 }
 
