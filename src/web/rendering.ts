@@ -263,6 +263,24 @@ export function renderDashboardPage(input: {
                   <li><strong>\${clientEscapeHtml(item.source)}</strong><span>\${clientEscapeHtml(item.claim)}</span></li>
                 \`).join("")}
               </ul>
+              <h4>Website Exploration Evidence</h4>
+              \${assessment.websiteExplorationEvidence && assessment.websiteExplorationEvidence.length > 0
+                ? \`<ul class="evidence-list">\${assessment.websiteExplorationEvidence.map((item) => \`
+                  <li>
+                    <strong>Landing page</strong>
+                    <span>Page URL: \${clientEscapeHtml(item.pageUrl)}</span>
+                    <span>HTML artifact: \${clientEscapeHtml(item.htmlArtifactUri)}</span>
+                    <span>Desktop screenshot: \${clientEscapeHtml(item.desktopScreenshot.uri)}</span>
+                    <span>Mobile screenshot: \${clientEscapeHtml(item.mobileScreenshot.uri)}</span>
+                    <span>Excerpt: \${clientEscapeHtml(item.reviewerReadyTextExcerpt)}</span>
+                    \${item.browserObservations.length > 0
+                      ? \`<span>Browser observations: \${clientEscapeHtml(item.browserObservations.join(" "))}</span>\`
+                      : ""
+                    }
+                  </li>
+                \`).join("")}</ul>\`
+                : \`<p class="empty-state">No Website Exploration Evidence recorded.</p>\`
+              }
               <h4>Safe claims</h4>
               \${assessment.safeClaims.length > 0
                 ? \`<ul class="evidence-list">\${assessment.safeClaims.map((claim) => \`<li>\${clientEscapeHtml(claim)}</li>\`).join("")}</ul>\`

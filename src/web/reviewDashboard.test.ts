@@ -12,7 +12,7 @@ import type {
   WebsiteDesignerAgent,
 } from "../preview-generation/types.js";
 import { createReviewDashboardApp } from "./app.js";
-import type { WebsiteReviewerAgent } from "../website-assessment/types.js";
+import type { WebsiteExplorerAgent, WebsiteReviewerAgent } from "../website-assessment/types.js";
 
 const baseConfiguration = {
   NODE_ENV: "test",
@@ -500,6 +500,39 @@ describe("Review Dashboard bootstrap slice", () => {
         brokenAssetsOrConsoleErrors: false,
         thirdPartyOnlyPresence: false,
       },
+      desktopScreenshot: {
+        uri: "s3://screenshots/detail-cafe-desktop.png",
+        capturedAt: new Date("2026-06-22T16:48:00.000Z"),
+      },
+      mobileScreenshot: {
+        uri: "s3://screenshots/detail-cafe-mobile.png",
+        capturedAt: new Date("2026-06-22T16:49:00.000Z"),
+      },
+      websiteExplorationEvidence: [
+        {
+          pageUrl: "https://detail.example/",
+          htmlArtifactUri: "website-assessments/prospect-1/assessment-run-1/pages/landing.html",
+          reviewerReadyTextExcerpt: "Detail Cafe serves espresso and pastries.",
+          desktopScreenshot: {
+            uri: "website-assessments/prospect-1/assessment-run-1/screenshots/landing-desktop.png",
+            capturedAt: new Date("2026-06-22T16:48:00.000Z"),
+          },
+          mobileScreenshot: {
+            uri: "website-assessments/prospect-1/assessment-run-1/screenshots/landing-mobile.png",
+            capturedAt: new Date("2026-06-22T16:49:00.000Z"),
+          },
+          deterministicChecks: {
+            pageLoad: "reachable" as const,
+            https: "valid" as const,
+            mobileViewport: "rendered" as const,
+            contactInformationFound: true,
+            servicesFound: true,
+            brokenAssetsOrConsoleErrors: false,
+            thirdPartyOnlyPresence: false,
+          },
+          browserObservations: ["Landing page loaded with a menu section."],
+        },
+      ],
       opportunityCategory: "outdated_or_low_quality" as const,
       confidence: 0.77,
       summary: "The site is reachable, but key cafe details are hard to scan on mobile.",
@@ -544,11 +577,24 @@ describe("Review Dashboard bootstrap slice", () => {
         operatorReviewNotes: websiteAssessment.reviewNotes,
       })),
     };
+    const websiteExplorerAgent: WebsiteExplorerAgent = {
+      explore: vi.fn(async () => ({
+        evidence: websiteAssessment.websiteExplorationEvidence,
+        reviewContext: {
+          currentWebsiteUrl: "https://detail.example/",
+          htmlText: "Detail Cafe serves espresso and pastries.",
+          deterministicChecks: websiteAssessment.deterministicChecks,
+          desktopScreenshot: websiteAssessment.desktopScreenshot,
+          mobileScreenshot: websiteAssessment.mobileScreenshot,
+        },
+      })),
+    };
 
     const app = createReviewDashboardApp({
       auditTrail,
       configuration,
       prospectRegistry,
+      websiteExplorerAgent,
       websiteReviewerAgent,
     });
     const operator = request.agent(app);
@@ -561,33 +607,30 @@ describe("Review Dashboard bootstrap slice", () => {
 
     const response = await operator
       .post("/api/prospect-businesses/prospect-1/website-assessment")
-      .send({
-        currentWebsiteUrl: "https://detail.example",
-        htmlText: "<main>Detail Cafe</main>",
-        deterministicChecks: websiteAssessment.deterministicChecks,
-        desktopScreenshot: {
-          uri: "s3://screenshots/detail-cafe-desktop.png",
-          capturedAt: "2026-06-22T16:48:00.000Z",
-        },
-        mobileScreenshot: {
-          uri: "s3://screenshots/detail-cafe-mobile.png",
-          capturedAt: "2026-06-22T16:49:00.000Z",
-        },
-      })
+      .send({})
       .expect(201);
 
+    expect(websiteExplorerAgent.explore).toHaveBeenCalledWith({
+      prospectBusiness,
+      currentWebsiteUrl: "https://detail.example",
+      assessmentRunId: expect.any(String),
+      explorationBudget: expect.objectContaining({ maxPages: 1 }),
+      reviewContextBudget: expect.objectContaining({ maxTextCharacters: expect.any(Number) }),
+    });
     expect(websiteReviewerAgent.review).toHaveBeenCalledWith({
       prospectBusiness,
       input: expect.objectContaining({
-        currentWebsiteUrl: "https://detail.example",
-        htmlText: "<main>Detail Cafe</main>",
+        currentWebsiteUrl: "https://detail.example/",
+        htmlText: "Detail Cafe serves espresso and pastries.",
         deterministicChecks: websiteAssessment.deterministicChecks,
+        websiteExplorationEvidence: websiteAssessment.websiteExplorationEvidence,
       }),
     });
     expect(prospectRegistry.saveWebsiteAssessment).toHaveBeenCalledWith({
       prospectBusinessId: "prospect-1",
       input: expect.objectContaining({
-        currentWebsiteUrl: "https://detail.example",
+        currentWebsiteUrl: "https://detail.example/",
+        websiteExplorationEvidence: websiteAssessment.websiteExplorationEvidence,
         mobileScreenshot: {
           uri: "s3://screenshots/detail-cafe-mobile.png",
           capturedAt: new Date("2026-06-22T16:49:00.000Z"),
@@ -601,6 +644,13 @@ describe("Review Dashboard bootstrap slice", () => {
     expect(response.body.websiteAssessment).toMatchObject({
       opportunityCategory: "outdated_or_low_quality",
       evidence: [{ source: "mobile_screenshot" }],
+      websiteExplorationEvidence: [
+        {
+          pageUrl: "https://detail.example/",
+          htmlArtifactUri: "website-assessments/prospect-1/assessment-run-1/pages/landing.html",
+          reviewerReadyTextExcerpt: "Detail Cafe serves espresso and pastries.",
+        },
+      ],
       previewEligibility: {
         eligibleByDefault: true,
         effectiveEligible: true,
@@ -610,6 +660,7 @@ describe("Review Dashboard bootstrap slice", () => {
     const dashboard = await operator.get("/dashboard").expect(200);
     expect(dashboard.text).toContain("Website Assessment");
     expect(dashboard.text).toContain("Preview Eligibility");
+    expect(dashboard.text).toContain("Website Exploration Evidence");
   });
 
   it("lets the operator find, approve, and add Contact Evidence", async () => {

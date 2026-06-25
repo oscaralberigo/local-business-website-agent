@@ -28,7 +28,7 @@ import type {
 } from "../preview-generation/types.js";
 import { evaluatePreviewPublicationCompliance } from "../preview-publication/preview-publication-compliance.js";
 import { assessWebsiteOpportunity } from "../website-assessment/assess-website-opportunity.js";
-import type { WebsiteAssessmentStore, WebsiteReviewerAgent } from "../website-assessment/types.js";
+import type { WebsiteAssessmentStore, WebsiteExplorerAgent, WebsiteReviewerAgent } from "../website-assessment/types.js";
 
 export type ProspectBusinessWorkflowRegistry = ProspectRegistry &
   BusinessContextStore &
@@ -53,6 +53,7 @@ export async function runProspectBusinessWorkflow(input: {
   registry: ProspectBusinessWorkflowRegistry;
   auditTrail: AuditTrailGateway;
   businessContextResearcher: BusinessContextResearcher;
+  websiteExplorerAgent?: WebsiteExplorerAgent;
   websiteReviewerAgent: WebsiteReviewerAgent;
   websiteDesignerAgent: WebsiteDesignerAgent;
   websiteBuilderAgent: WebsiteBuilderAgent;
@@ -117,6 +118,7 @@ export async function runProspectBusinessWorkflow(input: {
   prospectBusiness = await input.registry.getProspectBusinessDetail(prospectBusiness.id);
   await assessWebsiteOpportunity({
     prospectBusiness,
+    websiteExplorerAgent: input.websiteExplorerAgent,
     reviewerAgent: input.websiteReviewerAgent,
     assessmentStore: input.registry,
     input: {

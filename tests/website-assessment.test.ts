@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { runDiscovery } from "../src/discovery/run-discovery.js";
 import { InMemoryProspectRegistry } from "../src/persistence/in-memory-prospect-registry.js";
 import { assessWebsiteOpportunity } from "../src/website-assessment/assess-website-opportunity.js";
-import type { WebsiteReviewerAgent } from "../src/website-assessment/types.js";
+import type { WebsiteExplorerAgent, WebsiteReviewerAgent } from "../src/website-assessment/types.js";
 import { createWebsiteReviewerAgent } from "../src/website-assessment/website-reviewer-agent.js";
 
 describe("Website Assessment", () => {
@@ -112,6 +112,177 @@ describe("Website Assessment", () => {
         eligibleByDefault: true,
         effectiveEligible: true,
       },
+    });
+  });
+
+  it("runs the Website Explorer Agent before the Website Reviewer Agent and saves landing-page evidence", async () => {
+    const registry = new InMemoryProspectRegistry();
+    const discoveryRun = await runDiscovery({
+      request: {
+        mode: "place_search",
+        searchTerm: "bakery",
+        searchLocation: { label: "Beacon, NY" },
+        discoveryLimit: 1,
+      },
+      registry,
+      discoverySource: {
+        async searchPlaces() {
+          return [
+            {
+              googlePlaceId: "places/explorer-bakery",
+              name: "Explorer Bakery",
+              formattedAddress: "2 Main St",
+              websiteUrl: "https://explorer-bakery.example",
+              categories: ["bakery"],
+              sourcePayload: { placeId: "places/explorer-bakery" },
+            },
+          ];
+        },
+      },
+    });
+    const prospectBusiness = discoveryRun.discoveredProspects[0]!;
+    const callOrder: string[] = [];
+    const websiteExplorerAgent: WebsiteExplorerAgent = {
+      explore: vi.fn(async () => {
+        callOrder.push("explorer");
+        return {
+          evidence: [
+            {
+              pageUrl: "https://explorer-bakery.example/",
+              htmlArtifactUri:
+                "website-assessments/prospect-explorer-bakery/assessment-run-1/pages/landing.html",
+              reviewerReadyTextExcerpt: "Explorer Bakery sells sourdough and custom cakes.",
+              desktopScreenshot: {
+                uri:
+                  "website-assessments/prospect-explorer-bakery/assessment-run-1/screenshots/landing-desktop.png",
+                capturedAt: new Date("2026-06-22T18:00:00.000Z"),
+              },
+              mobileScreenshot: {
+                uri:
+                  "website-assessments/prospect-explorer-bakery/assessment-run-1/screenshots/landing-mobile.png",
+                capturedAt: new Date("2026-06-22T18:01:00.000Z"),
+              },
+              deterministicChecks: {
+                pageLoad: "reachable" as const,
+                https: "valid" as const,
+                mobileViewport: "rendered" as const,
+                contactInformationFound: false,
+                servicesFound: true,
+                brokenAssetsOrConsoleErrors: false,
+                thirdPartyOnlyPresence: false,
+              },
+              browserObservations: [
+                "Landing page hero names the bakery.",
+                "No clear phone number appears above the fold.",
+              ],
+            },
+          ],
+          reviewContext: {
+            currentWebsiteUrl: "https://explorer-bakery.example/",
+            htmlText: "Explorer Bakery sells sourdough and custom cakes.",
+            deterministicChecks: {
+              pageLoad: "reachable" as const,
+              https: "valid" as const,
+              mobileViewport: "rendered" as const,
+              contactInformationFound: false,
+              servicesFound: true,
+              brokenAssetsOrConsoleErrors: false,
+              thirdPartyOnlyPresence: false,
+            },
+            desktopScreenshot: {
+              uri:
+                "website-assessments/prospect-explorer-bakery/assessment-run-1/screenshots/landing-desktop.png",
+              capturedAt: new Date("2026-06-22T18:00:00.000Z"),
+            },
+            mobileScreenshot: {
+              uri:
+                "website-assessments/prospect-explorer-bakery/assessment-run-1/screenshots/landing-mobile.png",
+              capturedAt: new Date("2026-06-22T18:01:00.000Z"),
+            },
+          },
+        };
+      }),
+    };
+    const reviewerAgent: WebsiteReviewerAgent = {
+      review: vi.fn(async () => {
+        callOrder.push("reviewer");
+        return {
+          opportunityCategory: "outdated_or_low_quality" as const,
+          confidence: 0.86,
+          summary: "The landing page is reachable, but contact details are hard to find.",
+          evidence: [
+            {
+              claim: "The landing-page mobile screenshot and browser observations did not show clear contact details.",
+              source: "mobile_screenshot" as const,
+            },
+          ],
+          recommendedPitchAngle: "modern_upgrade" as const,
+          outreachSafeClaims: ["I noticed contact details could be easier to find on the current website."],
+          operatorReviewNotes: ["Use the landing-page Website Exploration Evidence before outreach."],
+        };
+      }),
+    };
+
+    const websiteAssessment = await assessWebsiteOpportunity({
+      prospectBusiness,
+      websiteExplorerAgent,
+      reviewerAgent,
+      assessmentStore: registry,
+      input: {
+        currentWebsiteUrl: prospectBusiness.websiteUrl,
+        deterministicChecks: {
+          pageLoad: "not_checked",
+          https: "not_checked",
+          mobileViewport: "not_checked",
+          contactInformationFound: false,
+          servicesFound: false,
+          brokenAssetsOrConsoleErrors: false,
+          thirdPartyOnlyPresence: false,
+        },
+      },
+    });
+
+    expect(callOrder).toEqual(["explorer", "reviewer"]);
+    expect(websiteExplorerAgent.explore).toHaveBeenCalledWith({
+      prospectBusiness,
+      currentWebsiteUrl: "https://explorer-bakery.example",
+      assessmentRunId: expect.any(String),
+      explorationBudget: expect.objectContaining({
+        maxPages: 1,
+        maxScreenshots: 2,
+      }),
+      reviewContextBudget: expect.objectContaining({
+        maxTextCharacters: expect.any(Number),
+      }),
+    });
+    expect(reviewerAgent.review).toHaveBeenCalledWith({
+      prospectBusiness,
+      input: expect.objectContaining({
+        currentWebsiteUrl: "https://explorer-bakery.example/",
+        htmlText: "Explorer Bakery sells sourdough and custom cakes.",
+        websiteExplorationEvidence: [
+          expect.objectContaining({
+            pageUrl: "https://explorer-bakery.example/",
+            reviewerReadyTextExcerpt: "Explorer Bakery sells sourdough and custom cakes.",
+            browserObservations: [
+              "Landing page hero names the bakery.",
+              "No clear phone number appears above the fold.",
+            ],
+          }),
+        ],
+      }),
+    });
+    expect(websiteAssessment).toMatchObject({
+      currentWebsiteUrl: "https://explorer-bakery.example/",
+      htmlText: "Explorer Bakery sells sourdough and custom cakes.",
+      websiteExplorationEvidence: [
+        {
+          pageUrl: "https://explorer-bakery.example/",
+          reviewerReadyTextExcerpt: "Explorer Bakery sells sourdough and custom cakes.",
+          htmlArtifactUri:
+            "website-assessments/prospect-explorer-bakery/assessment-run-1/pages/landing.html",
+        },
+      ],
     });
   });
 

@@ -14,7 +14,7 @@ import type {
 } from "../src/preview-generation/types.js";
 import { runDiscovery } from "../src/discovery/run-discovery.js";
 import { runProspectBusinessWorkflow } from "../src/workflow/prospect-business-workflow.js";
-import type { WebsiteReviewerAgent } from "../src/website-assessment/types.js";
+import type { WebsiteExplorerAgent, WebsiteReviewerAgent } from "../src/website-assessment/types.js";
 
 describe("Prospect Business workflow", () => {
   it("completes a mocked eligible Prospect Business lifecycle from Discovery Run to sent Outreach Email", async () => {
@@ -73,6 +73,128 @@ describe("Prospect Business workflow", () => {
       "draft_outreach.created",
       "outreach_email.sent",
     ]);
+  });
+
+  it("runs the Website Explorer Agent before the Website Reviewer Agent in Website Assessment", async () => {
+    const callOrder: string[] = [];
+    const emailProvider: EmailSendingProvider = {
+      send: vi.fn(async () => ({
+        provider: "resend",
+        providerMessageId: "message-detail-cafe",
+        sentAt: new Date("2026-06-22T21:00:00.000Z"),
+      })),
+    };
+    const websiteExplorerAgent: WebsiteExplorerAgent = {
+      explore: vi.fn(async () => {
+        callOrder.push("explorer");
+        return {
+          evidence: [
+            {
+              pageUrl: "https://detail.example/",
+              htmlArtifactUri: "website-assessments/prospect-1/assessment-run-1/pages/landing.html",
+              reviewerReadyTextExcerpt: "Detail Cafe serves house-roasted coffee.",
+              desktopScreenshot: {
+                uri: "website-assessments/prospect-1/assessment-run-1/screenshots/landing-desktop.png",
+                capturedAt: new Date("2026-06-22T18:00:00.000Z"),
+              },
+              mobileScreenshot: {
+                uri: "website-assessments/prospect-1/assessment-run-1/screenshots/landing-mobile.png",
+                capturedAt: new Date("2026-06-22T18:01:00.000Z"),
+              },
+              deterministicChecks: {
+                pageLoad: "reachable" as const,
+                https: "valid" as const,
+                mobileViewport: "rendered" as const,
+                contactInformationFound: true,
+                servicesFound: true,
+                brokenAssetsOrConsoleErrors: false,
+                thirdPartyOnlyPresence: false,
+              },
+              browserObservations: ["Landing page names the cafe and menu."],
+            },
+          ],
+          reviewContext: {
+            currentWebsiteUrl: "https://detail.example/",
+            htmlText: "Detail Cafe serves house-roasted coffee.",
+            deterministicChecks: {
+              pageLoad: "reachable" as const,
+              https: "valid" as const,
+              mobileViewport: "rendered" as const,
+              contactInformationFound: true,
+              servicesFound: true,
+              brokenAssetsOrConsoleErrors: false,
+              thirdPartyOnlyPresence: false,
+            },
+            desktopScreenshot: {
+              uri: "website-assessments/prospect-1/assessment-run-1/screenshots/landing-desktop.png",
+              capturedAt: new Date("2026-06-22T18:00:00.000Z"),
+            },
+            mobileScreenshot: {
+              uri: "website-assessments/prospect-1/assessment-run-1/screenshots/landing-mobile.png",
+              capturedAt: new Date("2026-06-22T18:01:00.000Z"),
+            },
+          },
+        };
+      }),
+    };
+    const websiteReviewerAgent: WebsiteReviewerAgent = {
+      review: vi.fn(async () => {
+        callOrder.push("reviewer");
+        return {
+          opportunityCategory: "outdated_or_low_quality" as const,
+          confidence: 0.85,
+          summary: "The current website is reachable, but key contact details are hard to scan on mobile.",
+          evidence: [
+            {
+              claim: "The mobile page makes contact details hard to scan.",
+              source: "mobile_screenshot" as const,
+            },
+          ],
+          recommendedPitchAngle: "modern_upgrade" as const,
+          outreachSafeClaims: ["The current website could make contact details easier to find."],
+          operatorReviewNotes: [],
+        };
+      }),
+    };
+
+    const { result } = await runDetailCafeWorkflow({
+      emailProvider,
+      websiteExplorerAgent,
+      websiteReviewerAgent,
+    });
+
+    expect(callOrder).toEqual(["explorer", "reviewer"]);
+    expect(websiteExplorerAgent.explore).toHaveBeenCalledWith({
+      prospectBusiness: expect.objectContaining({
+        name: "Detail Cafe",
+        websiteUrl: "https://detail.example",
+      }),
+      currentWebsiteUrl: "https://detail.example",
+      assessmentRunId: expect.any(String),
+      explorationBudget: expect.objectContaining({ maxPages: 1, maxScreenshots: 2 }),
+      reviewContextBudget: expect.objectContaining({ maxTextCharacters: expect.any(Number) }),
+    });
+    expect(websiteReviewerAgent.review).toHaveBeenCalledWith({
+      prospectBusiness: expect.objectContaining({ name: "Detail Cafe" }),
+      input: expect.objectContaining({
+        currentWebsiteUrl: "https://detail.example/",
+        htmlText: "Detail Cafe serves house-roasted coffee.",
+        websiteExplorationEvidence: [
+          expect.objectContaining({
+            pageUrl: "https://detail.example/",
+            browserObservations: ["Landing page names the cafe and menu."],
+          }),
+        ],
+      }),
+    });
+    expect(result.prospectBusiness.websiteAssessment).toMatchObject({
+      websiteExplorationEvidence: [
+        {
+          pageUrl: "https://detail.example/",
+          htmlArtifactUri: "website-assessments/prospect-1/assessment-run-1/pages/landing.html",
+        },
+      ],
+    });
   });
 
   it("records rediscovery as a new Discovery Appearance without rerunning the completed workflow", async () => {
@@ -511,6 +633,8 @@ async function runDetailCafeWorkflow(overrides: {
   emailProvider: EmailSendingProvider;
   outreachDrafterAgent?: Parameters<typeof runProspectBusinessWorkflow>[0]["outreachDrafterAgent"];
   previewHost?: PreviewHost;
+  websiteExplorerAgent?: WebsiteExplorerAgent;
+  websiteReviewerAgent?: WebsiteReviewerAgent;
 }) {
   const registry = overrides.registry ?? new InMemoryProspectRegistry();
   const auditTrail = overrides.auditTrail ?? createInMemoryAuditTrail();
@@ -522,7 +646,8 @@ async function runDetailCafeWorkflow(overrides: {
     registry,
     auditTrail,
     businessContextResearcher: overrides.businessContextResearcher ?? detailCafeResearcher(),
-    websiteReviewerAgent: detailCafeWebsiteReviewer(),
+    websiteExplorerAgent: overrides.websiteExplorerAgent,
+    websiteReviewerAgent: overrides.websiteReviewerAgent ?? detailCafeWebsiteReviewer(),
     websiteDesignerAgent: detailCafeWebsiteDesigner(),
     websiteBuilderAgent: detailCafeWebsiteBuilder(),
     previewArtifactStore: detailCafePreviewArtifactStore(),

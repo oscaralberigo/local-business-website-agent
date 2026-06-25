@@ -16,6 +16,9 @@ import { createWebsiteBuilderAgent } from "./preview-generation/website-builder-
 import { createWebsiteDesignerAgent } from "./preview-generation/website-designer-agent.js";
 import { FileSystemPreviewHost } from "./preview-publication/file-system-preview-host.js";
 import { createReviewDashboardApp } from "./web/app.js";
+import { FileSystemWebsiteExplorationArtifactStore } from "./website-assessment/file-system-website-exploration-artifact-store.js";
+import { createPlaywrightWebsiteLandingPageBrowser } from "./website-assessment/playwright-website-landing-page-browser.js";
+import { createLandingPageWebsiteExplorerAgent } from "./website-assessment/website-explorer-agent.js";
 import { createWebsiteReviewerAgent } from "./website-assessment/website-reviewer-agent.js";
 
 async function main(): Promise<void> {
@@ -37,6 +40,12 @@ async function main(): Promise<void> {
   });
   const websiteBuilderAgent = createWebsiteBuilderAgent();
   const websiteDesignerAgent = createWebsiteDesignerAgent();
+  const websiteExplorerAgent = createLandingPageWebsiteExplorerAgent({
+    browser: createPlaywrightWebsiteLandingPageBrowser(),
+    artifactStore: new FileSystemWebsiteExplorationArtifactStore({
+      rootDirectory: configuration.previewArtifactRoot,
+    }),
+  });
   const websiteReviewerAgent = createWebsiteReviewerAgent();
   const outreachDrafterAgent = createTemplateOutreachDrafterAgent();
   const emailProvider = createEmailSendingProviderForConfiguration(configuration);
@@ -55,6 +64,7 @@ async function main(): Promise<void> {
     outreachDrafterAgent,
     websiteBuilderAgent,
     websiteDesignerAgent,
+    websiteExplorerAgent,
     websiteReviewerAgent,
   });
   const server = app.listen(configuration.port, () => {

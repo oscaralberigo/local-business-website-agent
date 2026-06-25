@@ -647,6 +647,7 @@ export class InMemoryProspectRegistry
       deterministicChecks: input.input.deterministicChecks,
       desktopScreenshot: input.input.desktopScreenshot,
       mobileScreenshot: input.input.mobileScreenshot,
+      websiteExplorationEvidence: input.input.websiteExplorationEvidence,
       opportunityCategory: input.reviewerOutput.opportunityCategory,
       confidence: input.reviewerOutput.confidence,
       summary: input.reviewerOutput.summary,
