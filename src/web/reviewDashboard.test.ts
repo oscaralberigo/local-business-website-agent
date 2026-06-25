@@ -614,7 +614,7 @@ describe("Review Dashboard bootstrap slice", () => {
       prospectBusiness,
       currentWebsiteUrl: "https://detail.example",
       assessmentRunId: expect.any(String),
-      explorationBudget: expect.objectContaining({ maxPages: 1 }),
+      explorationBudget: expect.objectContaining({ maxPages: 3 }),
       reviewContextBudget: expect.objectContaining({ maxTextCharacters: expect.any(Number) }),
     });
     expect(websiteReviewerAgent.review).toHaveBeenCalledWith({

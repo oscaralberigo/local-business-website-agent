@@ -248,8 +248,8 @@ describe("Website Assessment", () => {
       currentWebsiteUrl: "https://explorer-bakery.example",
       assessmentRunId: expect.any(String),
       explorationBudget: expect.objectContaining({
-        maxPages: 1,
-        maxScreenshots: 2,
+        maxPages: 3,
+        maxScreenshots: 6,
       }),
       reviewContextBudget: expect.objectContaining({
         maxTextCharacters: expect.any(Number),

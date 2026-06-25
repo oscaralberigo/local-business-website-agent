@@ -4,10 +4,11 @@ import type {
   WebsiteDeterministicChecks,
   WebsiteExplorerAgent,
   WebsiteExplorationArtifactStore,
+  WebsiteExplorationEvidence,
   WebsiteScreenshotInput,
 } from "./types.js";
 
-export type WebsiteLandingPageCapture = {
+export type WebsitePageCapture = {
   pageUrl: string;
   rawHtml: string;
   visibleText: string;
@@ -23,11 +24,13 @@ export type WebsiteLandingPageCapture = {
   browserObservations: string[];
 };
 
+export type WebsiteLandingPageCapture = WebsitePageCapture;
+
 export type WebsiteLandingPageBrowser = {
-  captureLandingPage(input: {
+  capturePages(input: {
     currentWebsiteUrl: string;
     explorationBudget: ExplorationBudget;
-  }): Promise<WebsiteLandingPageCapture>;
+  }): Promise<WebsitePageCapture[]>;
 };
 
 export function createLandingPageWebsiteExplorerAgent(input: {
@@ -38,36 +41,52 @@ export function createLandingPageWebsiteExplorerAgent(input: {
     async explore({ prospectBusiness, currentWebsiteUrl, assessmentRunId, explorationBudget, reviewContextBudget }) {
       assertWithinAllowedDomains(currentWebsiteUrl, explorationBudget);
 
-      const landingPage = await input.browser.captureLandingPage({
+      const pageCaptures = await input.browser.capturePages({
         currentWebsiteUrl,
         explorationBudget,
       });
-      const reviewerReadyTextExcerpt = landingPage.visibleText.slice(
-        0,
-        reviewContextBudget.maxTextCharacters,
-      );
-      const evidence = await input.artifactStore.writeLandingPageEvidence({
-        prospectBusinessId: prospectBusiness.id,
-        assessmentRunId,
-        pageUrl: landingPage.pageUrl,
-        rawHtml: landingPage.rawHtml,
-        reviewerReadyTextExcerpt,
-        desktopScreenshot: landingPage.desktopScreenshot,
-        mobileScreenshot: landingPage.mobileScreenshot,
-        deterministicChecks: landingPage.deterministicChecks,
-        browserObservations: landingPage.browserObservations,
-      });
+      if (pageCaptures.length === 0) {
+        throw new Error("Website Explorer Agent did not capture any Website Exploration Evidence.");
+      }
+
+      const evidence: WebsiteExplorationEvidence[] = [];
+      for (const [index, pageCapture] of pageCaptures.entries()) {
+        const reviewerReadyTextExcerpt = pageCapture.visibleText.slice(
+          0,
+          reviewContextBudget.maxTextCharacters,
+        );
+        evidence.push(await input.artifactStore.writePageEvidence({
+          prospectBusinessId: prospectBusiness.id,
+          assessmentRunId,
+          pageArtifactName: pageArtifactNameFor(pageCapture.pageUrl, index),
+          pageUrl: pageCapture.pageUrl,
+          rawHtml: pageCapture.rawHtml,
+          reviewerReadyTextExcerpt,
+          desktopScreenshot: pageCapture.desktopScreenshot,
+          mobileScreenshot: pageCapture.mobileScreenshot,
+          deterministicChecks: pageCapture.deterministicChecks,
+          browserObservations: pageCapture.browserObservations,
+        }));
+      }
+
+      const landingPage = pageCaptures[0]!;
+      const reviewText = pageCaptures
+        .map((pageCapture) => pageCapture.visibleText)
+        .join("\n\n---\n\n")
+        .slice(0, reviewContextBudget.maxTextCharacters);
       const reviewContext: WebsiteAssessmentInput = {
         currentWebsiteUrl: landingPage.pageUrl,
-        htmlText: reviewerReadyTextExcerpt,
-        deterministicChecks: landingPage.deterministicChecks,
-        desktopScreenshot: screenshotForReview(evidence.desktopScreenshot),
-        mobileScreenshot: screenshotForReview(evidence.mobileScreenshot),
-        websiteExplorationEvidence: [evidence],
+        htmlText: reviewText,
+        deterministicChecks: aggregateDeterministicChecks(
+          pageCaptures.map((pageCapture) => pageCapture.deterministicChecks),
+        ),
+        desktopScreenshot: screenshotForReview(evidence[0]!.desktopScreenshot),
+        mobileScreenshot: screenshotForReview(evidence[0]!.mobileScreenshot),
+        websiteExplorationEvidence: evidence,
       };
 
       return {
-        evidence: [evidence],
+        evidence,
         reviewContext,
       };
     },
@@ -79,6 +98,36 @@ function screenshotForReview(screenshot: WebsiteScreenshotInput): WebsiteScreens
     uri: screenshot.uri,
     capturedAt: screenshot.capturedAt,
   };
+}
+
+function aggregateDeterministicChecks(checks: WebsiteDeterministicChecks[]): WebsiteDeterministicChecks {
+  const first = checks[0]!;
+  return {
+    pageLoad: checks.every((check) => check.pageLoad === "reachable") ? "reachable" : first.pageLoad,
+    https: checks.every((check) => check.https === "valid") ? "valid" : first.https,
+    mobileViewport: checks.every((check) => check.mobileViewport === "rendered") ? "rendered" : first.mobileViewport,
+    contactInformationFound: checks.some((check) => check.contactInformationFound),
+    servicesFound: checks.some((check) => check.servicesFound),
+    brokenAssetsOrConsoleErrors: checks.some((check) => check.brokenAssetsOrConsoleErrors),
+    thirdPartyOnlyPresence: checks.every((check) => check.thirdPartyOnlyPresence),
+  };
+}
+
+function pageArtifactNameFor(pageUrl: string, index: number): string {
+  if (index === 0) {
+    return "landing";
+  }
+
+  const pathname = new URL(pageUrl).pathname;
+  const slug = pathname
+    .split("/")
+    .filter(Boolean)
+    .join("-")
+    .replace(/[^a-zA-Z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40);
+
+  return `page-${index + 1}${slug ? `-${slug}` : ""}`;
 }
 
 function assertWithinAllowedDomains(currentWebsiteUrl: string, explorationBudget: ExplorationBudget): void {

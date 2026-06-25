@@ -80,8 +80,8 @@ async function exploreWebsiteForReview(input: {
 
 function defaultExplorationBudget(currentWebsiteUrl: string): ExplorationBudget {
   return {
-    maxPages: 1,
-    maxScreenshots: 2,
+    maxPages: 3,
+    maxScreenshots: 6,
     timeoutMs: 30000,
     allowedDomains: [new URL(currentWebsiteUrl).hostname],
     forbiddenActions: [
